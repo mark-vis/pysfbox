@@ -23,11 +23,13 @@ API tokens or repository secrets are stored.
 ## Cutting a release
 
 The version lives in **one place**: `__version__` in `pysfbox/__init__.py`
-(`pyproject.toml` reads it dynamically).
+(`pyproject.toml` reads it dynamically). Also update `CITATION.cff`
+(`version:` and `date-released:`) so the citation matches the release.
 
 ```bash
 # 1. bump the version
-#    edit pysfbox/__init__.py:  __version__ = "1.0.1"
+#    edit pysfbox/__init__.py :  __version__ = "1.0.1"
+#    edit CITATION.cff        :  version: 1.0.1  and  date-released: "YYYY-MM-DD"
 git commit -am "Release 1.0.1"
 
 # 2. tag it (v + the exact version) and push the tag
@@ -36,8 +38,24 @@ git push origin main --tags
 ```
 
 Pushing the tag runs the workflow: it builds the sdist + wheel, checks the tag
-matches the built version, and publishes to PyPI. Within a minute or two
+matches the built version, **publishes to PyPI**, and **creates a GitHub
+Release** (with the wheel/sdist attached). Within a minute or two
 `pip install pysfbox` (and `pipx install pysfbox`) serve the new version.
+
+## Citation & DOI (Zenodo)
+
+`CITATION.cff` gives GitHub a "Cite this repository" button and machine-readable
+citation metadata. For a citable **DOI**, enable the Zenodo–GitHub archive:
+
+1. One-time: sign in at https://zenodo.org with GitHub, open **GitHub** in the
+   settings, and flip the toggle **on** for `mark-vis/pysfbox`. Do this
+   *before* the release you want archived — Zenodo only archives releases
+   created after the toggle is on (it does not back-fill existing ones).
+2. Because the publish workflow now creates a GitHub Release for every tag,
+   each new release is archived by Zenodo automatically and gets its own DOI,
+   plus a **concept DOI** that always resolves to the latest version.
+3. After the first archived release, copy the concept DOI into `CITATION.cff`
+   (`doi:` line) and add a DOI badge to `README.md`.
 
 ## Test run first (optional)
 

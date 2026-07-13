@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use PySFBox in your research, please cite it as below."
+title: "PySFBox: Scheutjens–Fleer self-consistent-field lattice theory in pure Python/NumPy"
+abstract: >-
+  PySFBox is a pure-Python/NumPy reimplementation of the Scheutjens–Fleer
+  self-consistent-field (SF-SCF) lattice theory for polymers, surfactants and
+  (weak and strong) electrolytes at interfaces. It reads and writes the
+  input/output format of the classic sfbox/Namics programs and is validated
+  against the compiled Namics at or near machine precision.
+type: software
+authors:
+  - given-names: Mark
+    family-names: Vis
+    affiliation: Eindhoven University of Technology
+    email: m.vis@tue.nl
+    # orcid: "https://orcid.org/0000-0000-0000-0000"   # add your ORCID if you like
+version: 1.0.0
+date-released: "2026-07-13"
+license: GPL-3.0-or-later
+repository-code: "https://github.com/mark-vis/pysfbox"
+url: "https://github.com/mark-vis/pysfbox"
+keywords:
+  - Scheutjens-Fleer
+  - self-consistent field
+  - SCF
+  - polymer physics
+  - lattice model
+  - computational chemistry
+  - soft matter
+# doi: "10.5281/zenodo.XXXXXXX"   # add the Zenodo concept DOI once minted (see RELEASING.md)
