@@ -700,17 +700,50 @@ instead pre-solves iteratively to ~1e-6 relative). The count of free
 for H3O to set the pH"). A singular system or non-convergence also raise with
 actionable messages.
 
-### pH convention
+### pH and pK are in lattice units (not molar)
 
-PySFBox has **no `pH` keyword**. pH is set implicitly by anchoring the
-hydronium (`H3O`) state's bulk fraction, because
+PySFBox has **no `pH` keyword**, and — this is the part that trips people up —
+pH, pK, and every `alphabulk` are **lattice (site-fraction) quantities, exactly
+as in sfbox and Namics, not molar.** pH is set implicitly by anchoring the
+hydronium (`H3O`) bulk fraction:
 
 ```
-pH = −log10( alphabulk_H3O )       (site-fraction based)
+"pH" = −log10( alphabulk_H3O )      (alphabulk_H3O is a bulk SITE FRACTION)
 ```
 
-So `state : H3O : alphabulk : 1e-7` is pH 7. Titrate by scanning that anchor
-(exponential scale — `steps` means steps *per decade*):
+A site fraction is a volume fraction; it converts to molarity through the
+lattice site density
+
+```
+D = 1 / (N_A · bondlength³)   ≈ 61.5 M  for the default bondlength 3e-10 m
+                             (scales as bondlength⁻³)
+```
+
+so a molar concentration `c` corresponds to the site fraction `c / D`. Two
+consequences you must respect:
+
+- `−log10(alphabulk_H3O)` is a **lattice** pH. The real (molar) pH is
+  `pH_molar = −log10(alphabulk_H3O) − log10 D` (subtract ≈ 1.79 for a 3 Å bond).
+  So `alphabulk : 1e-7` is "pH 7" **only in lattice units** — in molar terms it
+  is pH ≈ 5.2.
+- **pK must be entered in the same units.** Convert a molar pK by adding
+  `log10 D` once for each dissolved ion the equilibrium nets out: a monoprotic
+  acid `AH + H2O = A⁻ + H3O⁺` uses `pK_lattice = pKa_molar + log10 D`; water
+  autoionization `2 H2O = H3O⁺ + OH⁻` uses `pKw_lattice = pKw_molar + 2·log10 D`.
+
+Worked, bondlength 3 Å (`D ≈ 61.5 M`, `log10 D ≈ 1.79`):
+
+| real / molar value | lattice value you actually enter |
+|---|---|
+| pH 4.5 → `alphabulk_H3O` | `5.14e-7` |
+| water `pKw = 14` | `17.58` |
+| carboxylic `pKa ≈ 4.76` | `6.55` |
+
+The `pK : 14` and `alphabulk : 1e-7` in the examples on this page are
+illustrative **lattice-unit** numbers (a lattice pKw of 14 and a lattice pH of
+7); for a quantitative titration, convert your molar pH and pK as above.
+PySFBox uses the lattice-unit pK directly (no activity correction). Titrate by
+scanning the anchor (exponential scale — `steps` means steps *per decade*):
 
 ```
 var : state-H3O : scan : alphabulk
@@ -751,7 +784,7 @@ reaction : weak : equation : 1(AH) + 1(H2O) = 1(AM) + 1(H3O)
 reaction : weak : pK : 7
 reaction : auto : equation : 2(H2O) = 1(OH) + 1(H3O)
 reaction : auto : pK : 14
-state : H3O : alphabulk : 1e-7      // pH 7
+state : H3O : alphabulk : 1e-7      // pH 7 in lattice units (see above)
 ```
 
 ---
