@@ -742,8 +742,29 @@ Worked, bondlength 3 Å (`D ≈ 61.5 M`, `log10 D ≈ 1.79`):
 The `pK : 14` and `alphabulk : 1e-7` in the examples on this page are
 illustrative **lattice-unit** numbers (a lattice pKw of 14 and a lattice pH of
 7); for a quantitative titration, convert your molar pH and pK as above.
-PySFBox uses the lattice-unit pK directly (no activity correction). Titrate by
-scanning the anchor (exponential scale — `steps` means steps *per decade*):
+PySFBox uses the lattice-unit pK directly (no activity correction).
+
+**State fraction vs volume fraction.** You set the pH through
+`alphabulk_H3O`, which is the bulk fraction of the water segment that is in the
+`H3O` state — a **state fraction** (Σ over a mon's states = 1), *not* the bulk
+volume fraction of H3O. The actual bulk H3O volume fraction is
+`phibulk_H3O = phibulk_water · alphabulk_H3O` (available as the `phibulk_H3O`
+output). Anchoring the *state* fraction is deliberate: the acid ionization
+responds to the ratio `α_H2O / α_H3O`, in which `phibulk_water` cancels, so
+`alphabulk_H3O` fixes the degree of ionization regardless of how much water the
+bulk holds. A pH electrode, though, reads `−log10[H3O⁺]`, so the real molar pH
+carries the solvent-dilution term as well:
+
+```
+pH_molar = −log10(alphabulk_H3O) − log10(phibulk_water) − log10 D
+```
+
+When the bulk is essentially pure water (`phibulk_water ≈ 1`, the usual case)
+the middle term vanishes and `alphabulk_H3O ≈ phibulk_H3O`; it only matters when
+a co-solvent, high salt, or crowding displaces water in the **bulk**.
+
+Titrate by scanning the anchor (exponential scale — `steps` means steps
+*per decade*):
 
 ```
 var : state-H3O : scan : alphabulk
