@@ -1,0 +1,33 @@
+// 3-gradient (flat x,y,z, simple_cubic 7-point stencil) regression: a polymer
+// brush grafted on a PATCH of the lower-x wall (pinned over a y,z sub-block),
+// spreading in all three axes. Finite-volume LatticeND; a yz-uniform run
+// reduces to the 1D brush to the solver floor (~5e-11), matching Namics LGrad3
+// by reduction. Committed as a reproducibility reference.
+lat : NN : gradients : 3
+lat : NN : geometry : flat
+lat : NN : n_layers_x : 14
+lat : NN : n_layers_y : 6
+lat : NN : n_layers_z : 6
+lat : NN : lowerbound_x : surface
+
+mon : G : freedom : pinned
+mon : G : pinned_range : 1,1,1;1,3,3
+mon : A : freedom : free
+mon : W : freedom : free
+mon : A : chi_W : 0.5
+
+mol : brush : composition : (G)1(A)18
+mol : brush : freedom : restricted
+mol : brush : theta : 12
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : n : tolerance : 1e-9
+
+output : kal : append : false
+kal : mol : brush : theta
+kal : mol : brush : GN
+
+output : pro : append : false
+pro : mol : brush : phi

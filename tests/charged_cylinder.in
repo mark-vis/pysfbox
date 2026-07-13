@@ -1,0 +1,43 @@
+// Charged (curved) regression 2: the same charged colloid + counterions +
+// salt on a CYLINDRICAL lattice (a charged rod / pore wall). The curved
+// Poisson uses r (not r^2) face weights and C = C0/pi (Namics
+// LGrad1::UpdatePsi cylindrical free branch). Validated against the
+// compiled Namics on 5 Jul 2026: ion profiles ~5e-9 relative (convergence
+// floor). Companion to charged_sphere.in (the spherical case, which also
+// carries the analytic Debye-Huckel validation).
+lat : S : geometry : cylindrical
+lat : S : n_layers : 50
+lat : S : gradients : 1
+lat : S : lattice_type : simple_cubic
+lat : S : bondlength : 3e-10
+
+mon : X : freedom : pinned
+mon : X : pinned_range : 1;1
+mon : X : valence : 1
+mon : W : freedom : free
+mon : Na : freedom : free
+mon : Na : valence : 1
+mon : Cl : freedom : free
+mon : Cl : valence : -1
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+mol : col : composition : (X)1
+mol : col : freedom : restricted
+mol : col : theta : 3
+
+mol : Na : composition : (Na)1
+mol : Na : freedom : neutralizer
+
+mol : Cl : composition : (Cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.02
+
+output : pro : append : false
+pro : mon : Na : phi
+pro : mon : Cl : phi
+
+newton : isaac : tolerance : 1e-9
+
+start

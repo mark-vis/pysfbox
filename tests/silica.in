@@ -1,0 +1,105 @@
+// Composed-features regression: the real Namics example_inputs/silica.in --
+// a silica surface in water + salt at fixed pH. This one exercises almost
+// everything at once, all in a single self-consistent solve:
+//   * a weak-acid SURFACE charge that titrates (silanol SiOH <-> SiO- + H3O,
+//     pK 7.5) with real charge regulation (only ~23% ionised at the wall vs
+//     ~99% in bulk -- the electrostatics suppressing dissociation);
+//   * water autoionisation (2 H2O <-> H3O+ + OH-);
+//   * a BRANCHED associating-water solvent cluster, @dend(W,(W)1,4)
+//     (generic dendrimer of W beads -- NOT a special mol_water closed form);
+//   * salt (na+/cl-) + a neutralizer + dielectric contrast (eps 2 vs 80);
+//   * planar Poisson with a frozen lower wall.
+// Validated against the compiled Namics (5 Jul 2026): theta_SIO / theta_SIOH
+// match to ~1e-11, and every .pro profile matches to the convergence floor
+// (psi 3e-8, ion phi 3e-9, densities 1e-16), INCLUDING the two ghost layers
+// emitted by `output : pro : write_bounds : true`. This committed reference
+// is PySFBox' own output (a regression guard); it agreed with the oracle
+// at the floor when generated.
+lat : flat : lattice_type : simple_cubic
+lat : flat : n_layers : 100
+lat : flat : geometry : planar
+lat : flat : gradients : 1
+lat : flat : bondlength : 3e-10
+lat : flat : lowerbound : surface
+
+mon : W : valence : 0
+mon : S : valence : 0
+mon : na : valence : 1
+mon : cl : valence :-1
+
+state : SIOH: valence : 0
+state : SIOH : mon : SiO
+state : SIO : valence : -1
+state : SIO : mon : SiO
+reaction : weak : equation: 1(SIOH)+1(H2O)=1(SIO)+1(H3O)
+reaction: weak : pK : 7.5
+
+mon : SiO : freedom : pinned
+mon : SiO : pinned_range : 1;1
+
+mon : Si : valence : 0
+mon : Si : freedom : pinned
+mon : Si : pinned_range : 1;1
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+
+mon : water : freedom : free
+
+state : H3O : valence : 1
+state : H3O : mon  : water
+state : H2O : valence : 0
+state : H2O : mon : water
+state : OH : valence : -1
+state : OH : mon : water
+
+reaction : auto : equation : 2(H2O)=1(H3O)+1(OH)
+reaction : auto : pK : 14
+
+mon : Si : chi_W : 0
+mon : Si : chi_water : 0
+mon : Si : chi_na  : 1
+mon : Si : chi_cl : 1
+mon : Si : epsilon : 2
+
+mon : SiO : chi_W : 0
+mon : SiO : chi_water : 0
+mon : SiO : chi_na : 1
+mon : SiO : chi_cl : 1
+mon : SiO : epsilon : 2
+
+
+mol : W5 : composition : @dend(W,(W)1,4)
+mol : W5 : freedom : solvent
+
+mol : water : composition : (water)1
+mol : water : freedom : free
+mol : water : phibulk : 0.018
+
+mol : Si : composition : (Si)1
+mol : Si : freedom  : restricted
+mol : Si : theta : 0.4999
+
+mol : SiO : composition : (SiO)1
+mol : SiO : freedom : restricted
+mol : SiO : theta : 0.5
+
+mol : Na : composition : (na)1
+mol : Na : freedom : neutralizer
+
+mol : Cl : composition : (cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.1
+output : pro : write_bounds : true
+pro : sys : NN : psi
+pro : sys : NN : q
+pro : mon : * : phi
+
+output : kal : append : true
+kal : mon : water : alphabulk_H3O
+kal : mon : SiO : theta_SIO
+kal : mon : SiO : theta_SIOH
+
+state : H3O : alphabulk : 1e-10
+
+newton : isaac : i_info : 1000

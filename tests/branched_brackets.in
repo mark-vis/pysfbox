@@ -1,0 +1,49 @@
+// Branched regression 4: nested bracket side chains
+// (A)4(B)1[(C)2(B)1[(C)1](B)1](A)4 -- a branch point whose side chain
+// itself branches -- restricted at an adsorbing wall. Validated against
+// the compiled Namics on 5 Jul 2026 to ~8e-10 relative. (The recursive
+// bracket parser and same-node multiple '[..][..]' children are covered;
+// a deliberately stiffer nested toy where the ORACLE's own mass balance
+// fails is kept out of the suite as an oracle-inconsistency note.)
+lat : flat : geometry : planar
+lat : flat : n_layers : 40
+lat : flat : gradients : 1
+lat : flat : lattice_type : simple_cubic
+lat : flat : lowerbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : A : freedom : free
+mon : B : freedom : free
+mon : C : freedom : free
+mon : W : freedom : free
+mon : A : chi_S : -1
+mon : A : chi_W : 0.8
+mon : B : chi_W : 0.3
+mon : C : chi_W : -0.4
+
+mol : water : composition : (W)2[(W)1][(W)1](W)1
+mol : water : freedom : solvent
+
+mol : surf : composition : (A)4(B)1[(C)2(B)1[(C)1](B)1](A)4
+mol : surf : freedom : restricted
+mol : surf : theta : 0.8
+
+output : kal : append : false
+kal : mol : surf : theta
+kal : mol : surf : phibulk
+kal : mol : surf : mu
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+output : pro : append : false
+pro : mol : surf : phi
+pro : mol : water : phi
+pro : mon : A : phi
+pro : mon : B : phi
+pro : mon : C : phi
+
+newton : isaac : tolerance : 1e-9
+newton : isaac : iterationlimit : 5000
+newton : isaac : deltamax : 0.05
+
+start

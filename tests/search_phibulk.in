@@ -1,0 +1,40 @@
+// search regression: drive a restricted adsorbing polymer's theta until its
+// implied bulk fraction (phibulk = theta/GN) hits a target. Self-validating:
+// after the super-iteration converges, mol-pol phibulk must equal the target
+// to the super-tolerance. Runner-level regula falsi (Namics SuperIterate),
+// no oracle dependency -- the compiled search examples all need the
+// sys:constraint:delta membrane machinery PySFBox does not have, so this
+// exercises the tractable subset (mol theta/n/phibulk search + sys/mol
+// scalar target). The wall is mild (chi_S=-1) so every super-iteration step
+// converges; phibulk is monotone in theta, so the root is well-bracketed.
+lat : NN : n_layers : 50
+lat : NN : geometry : planar
+lat : NN : lowerbound : surface
+
+mon : X : freedom : free
+mon : W : freedom : free
+mon : X : chi_W : 0.5
+mon : X : chi_S : -1
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+
+mol : pol : composition : (X)40
+mol : pol : freedom : restricted
+mol : pol : theta : 20
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : n : tolerance : 1e-9
+newton : n : super_tolerance : 1e-7
+
+var : mol-pol : search : theta
+var : mol-pol : phibulk : 0.1
+
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : phibulk
+kal : mol : pol : GN
+kal : mol : pol : theta_exc
+kal : sys : NN : grand_potential

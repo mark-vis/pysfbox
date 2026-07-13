@@ -1,0 +1,49 @@
+// Strong polyelectrolyte ((A)50, valence -0.5) adsorbing on a neutral wall
+// (chi_S = -2) with salt + neutralizer, free-psi Poisson branch. Validated
+// against the compiled Namics at machine precision (phi 2e-11, psi 4e-10;
+// 4 Jul 2026). Debye decay matches theory to ~7% (finite-ion-volume).
+
+lat : flat : gradients : 1
+lat : flat : geometry : planar
+lat : flat : n_layers : 80
+lat : flat : lattice_type : simple_cubic
+lat : flat : bondlength : 3e-10
+lat : flat : lowerbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : S : epsilon : 5
+mon : S : chi_A : -2
+
+mon : W : valence : 0
+mon : W : epsilon : 80
+mon : A : valence : -0.5
+mon : A : epsilon : 20
+mon : Na : valence : 1
+mon : Na : epsilon : 20
+mon : Cl : valence : -1
+mon : Cl : epsilon : 20
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+mol : pol : composition : (A)50
+mol : pol : freedom : free
+mol : pol : phibulk : 1e-3
+mol : Na : composition : (Na)1
+mol : Na : freedom : neutralizer
+mol : Cl : composition : (Cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.005
+
+newton : isaac : iterationlimit : 2000
+newton : isaac : tolerance : 1e-9
+
+output : kal : append : false
+kal : mol : * : phibulk
+kal : mol : * : theta_exc
+kal : sys : NN : grand_potential
+output : pro : append : false
+pro : mol : * : phi
+pro : sys : NN : psi
+pro : sys : NN : q
+start

@@ -1,0 +1,61 @@
+// Charged (curved) regression 3: weak charges on a CURVED lattice -- a
+// pinned weak-polyacid star (X)1(A)30 at a spherical centre, its A
+// segments titrating (AH <-> AM, pK 6) in salt, counterions neutralizing.
+// Exercises the curved Poisson (r^2 face weights) together with the
+// internal-state machinery: the state charge sum_s v_s phi_s feeds the
+// same geometry-agnostic q. Validated against the compiled Namics on
+// 5 Jul 2026 to ~8e-9 relative (convergence floor), including the
+// state-resolved ionized-acid profile phi-AM. Demonstrates that curved +
+// weak charges compose without special-casing.
+lat : S : geometry : spherical
+lat : S : n_layers : 60
+lat : S : gradients : 1
+lat : S : lattice_type : simple_cubic
+lat : S : bondlength : 3e-10
+
+mon : X : freedom : pinned
+mon : X : pinned_range : 1;1
+mon : W : freedom : free
+mon : A : freedom : free
+mon : Na : freedom : free
+mon : Na : valence : 1
+mon : Cl : freedom : free
+mon : Cl : valence : -1
+
+state : AH : valence : 0
+state : AH : mon : A
+state : AM : valence : -1
+state : AM : mon : A
+state : H3O : valence : 1
+state : H3O : mon : W
+state : H2O : valence : 0
+state : H2O : mon : W
+state : OH : valence : -1
+state : OH : mon : W
+
+reaction : weak : equation : 1(AH) + 1(H2O) = 1(AM) + 1(H3O)
+reaction : weak : pK : 6
+reaction : auto : equation : 2(H2O) = 1(OH) + 1(H3O)
+reaction : auto : pK : 14
+state : H3O : alphabulk : 1e-7
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+mol : star : composition : (X)1(A)30
+mol : star : freedom : restricted
+mol : star : theta : 40
+mol : Na : composition : (Na)1
+mol : Na : freedom : neutralizer
+mol : Cl : composition : (Cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.05
+
+output : pro : append : false
+pro : mon : A : phi
+pro : mon : A : phi-AM
+pro : mon : Na : phi
+pro : mon : Cl : phi
+
+newton : isaac : tolerance : 1e-9
+
+start

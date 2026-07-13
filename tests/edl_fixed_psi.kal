@@ -1,0 +1,2 @@
+mol:water:phibulk	mol:Na:phibulk	mol:Cl:phibulk	mol:water:theta	mol:Na:theta	mol:Cl:theta	mol:water:theta_exc	mol:Na:theta_exc	mol:Cl:theta_exc	mol:water:MU	mol:Na:MU	mol:Cl:MU	lat:mylat:n_layers	newton:isaac:residual	sys:NN:grand_potential
+9.7999999999999998e-01	1.0000000000000000e-02	1.0000000000000000e-02	9.7022029151654394e+01	9.9511424609706789e-01	9.8285660224872595e-01	-9.7797084834560621e-01	-4.8857539029321106e-03	-1.7143397751274048e-02	-2.0202707317518609e-02	-4.6051701859880909e+00	-4.6051701859880909e+00	100	NiN	1.2828158203724021e-04

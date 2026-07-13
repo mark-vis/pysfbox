@@ -1,0 +1,33 @@
+// Small spherical FJC_choices : 5 (fjc = 2) case: a restricted triblock whose
+// middle block is pinned near the centre of a refined spherical lattice (a
+// scaled-down Pluronic micelle, cf. exc9). Exercises the (2*fjc+1)-point
+// propagator, the fjc ghost layers, and the fjc range scaling. Reference
+// cross-validated against the compiled Namics.
+lat : sph : geometry : spherical
+lat : sph : n_layers : 20
+lat : sph : lattice_type : hexagonal
+lat : sph : FJC_choices : 5
+
+mon : W : freedom : free
+mon : A : freedom : free
+mon : P : freedom : pinned
+mon : P : pinned_range : 1;2
+
+mon : A : chi_W : 0.4
+mon : P : chi_W : 1.0
+
+mol : solvent : freedom : solvent
+mol : solvent : composition : (W)1
+mol : poly : freedom : restricted
+mol : poly : composition : (A)10(P)5(A)10
+mol : poly : theta : 30
+
+output : kal : append : false
+kal : mol : poly : theta_exc
+kal : mol : poly : chainlength
+kal : sys : noname : free_energy
+kal : sys : noname : grand_potential
+output : pro : append : false
+pro : mol : poly : phi
+pro : mon : A : phi
+start

@@ -1,0 +1,37 @@
+// Branched regression 3: a comb, 12 teeth of (A)10 on a B backbone
+// (@comb((B)5;B,(A)10,(B)4,12;(B)1), N=186), free at phibulk 0.001 near an
+// adsorbing wall (chi_Si_B = -6). Validated against the compiled Namics on
+// 5 Jul 2026: phi profiles ~1e-7 relative (both at the ~1e-8 floor), the
+// A/B chain-length partition exact and mass-balanced. PySFBox walks each
+// tooth (no Namics degeneracy trick -- same result; the O(teeth) cost is a
+// noted future optimisation, the branched-propagator notes).
+lat : flat : n_layers : 60
+lat : flat : gradients : 1
+lat : flat : geometry : planar
+lat : flat : lattice_type : simple_cubic
+mon : Si : freedom : frozen
+mon : Si : frozen_range : 1;1
+mon : Si : chi_B : -6
+mon : A : chi_W : 0.5
+mon : W : freedom : free
+mon : A : freedom : free
+mon : B : freedom : free
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+mol : pol : composition : @comb((B)5;B,(A)10,(B)4,12;(B)1)
+mol : pol : freedom : free
+mol : pol : phibulk : 0.001
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : GN
+kal : mon : A : theta
+kal : mon : B : theta
+kal : sys : NN : grand_potential
+output : pro : append : false
+pro : mol : pol : phi
+pro : mon : A : phi
+pro : mon : B : phi
+newton : isaac : method : pseudohessian
+newton : isaac : deltamax : 0.05
+newton : isaac : tolerance : 1e-8
+start

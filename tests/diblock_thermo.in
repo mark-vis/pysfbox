@@ -1,0 +1,34 @@
+// Thermodynamics regression: a diblock (A)20(B)20 with inter-block chi
+// (chi_AB=1.2) adsorbing at a frozen wall (chi_AS=-2), free at phibulk 0.05.
+// Guards BOTH thermo bugs found in the 5 Jul 2026 physics review:
+// (1) free_energy must include the per-molecule intramolecular chi
+// self-energy -1/2 sum_jk chi_jk f_j f_k (the AB inter-block term);
+// (2) grand_potential must EXCLUDE the free-frozen (A-wall) chi (carried
+// implicitly by the profile) -- else Omega depends on mon declaration
+// order. Validated against the compiled Namics: F=-1.84075, GP=-0.009185
+// (both to 6 digits). Before the fixes, F was off by the AB self-chi and
+// GP was order-dependent.
+lat : flat : geometry : planar
+lat : flat : n_layers : 40
+lat : flat : gradients : 1
+lat : flat : lattice_type : simple_cubic
+lat : flat : lowerbound : surface
+mon : A : freedom : free
+mon : B : freedom : free
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : W : freedom : free
+mon : A : chi_B : 1.2
+mon : A : chi_S : -2
+mon : A : chi_W : 0.4
+mon : B : chi_W : 0.6
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+mol : pol : composition : (A)20(B)20
+mol : pol : freedom : free
+mol : pol : phibulk : 0.05
+output : kal : append : false
+kal : mol : pol : mu
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+start

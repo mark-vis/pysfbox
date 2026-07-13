@@ -1,0 +1,43 @@
+// Branched regression 1: a 3-generation symmetric dendrimer with three
+// monomer types, pinned centre, at a planar surface. Composition
+// @dend(X,(A)24,2;A,(B)24,2;B,(D)25(D)5,2) = the shipped dendrimer_in_bulk
+// molecule (N=391: 1 X + 2*24 A + 2 A-branch + 4*24 B + 4 B-branch + 8*30
+// D). Validated against the compiled Namics (Markov 1) on 5 Jul 2026: phi
+// profiles agree to ~3e-9 relative and the chain-length partition
+// (X1/A50/B100/D240) is exact. The tree message-passing engine
+// (model._compute_phi_tree) reduces here to walking
+// each arm; a 2-arm '@dend(X,(A)N,2)' star reproduces the linear palindrome
+// (A)N(X)(A)N bit-for-bit (~1e-16), the internal equivalence check.
+lat : flat : geometry : planar
+lat : flat : n_layers : 100
+lat : flat : gradients : 1
+lat : flat : lattice_type : simple_cubic
+
+mon : X : freedom : pinned
+mon : X : pinned_range : 1;1
+mon : W : freedom : free
+mon : A : freedom : free
+mon : B : freedom : free
+mon : D : freedom : free
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+mol : pol : composition : @dend(X,(A)24,2;A,(B)24,2;B,(D)25(D)5,2)
+mol : pol : freedom : restricted
+mol : pol : n : 0.01
+
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : GN
+kal : mon : A : theta
+kal : mon : B : theta
+kal : mon : D : theta
+output : pro : append : false
+pro : mol : pol : phi
+pro : mon : A : phi
+pro : mon : B : phi
+
+newton : isaac : tolerance : 1e-9
+
+start

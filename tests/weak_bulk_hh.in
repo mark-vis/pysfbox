@@ -1,0 +1,79 @@
+// Weak charges regression 1: BULK Henderson-Hasselbalch (closed form).
+// Uniform bulk-only system: 3-state water (H2O/H3O/OH, pK_w 14) + 2-state
+// weak acid (AH/AM, pK_a 7) + salt + neutralizer at alphabulk_H3O = 1e-7.
+// Validates the bulk ionisation pre-solve (pysfbox/reactions.py): every
+// alphabulk column equals the EXACT site-fraction mass-action root
+// (alpha_AM = 1/(1 + 10^(pKa-pH)/alpha_H2O), water quadratic) -- verified
+// against 40-digit Decimal arithmetic to ~4e-15 (5 Jul 2026).
+// NOTE the intentional oracle deviation: at the neutral point Namics stops
+// its pre-solve early and ships alpha_OH = Kw/a = 1e-7 (~4e-7 relative off);
+// PySFBox solves the quadratic exactly: alpha_OH = 9.9999960000012e-8.
+// Everything else matches the compiled Namics at machine precision
+// (validated against a 40-digit Decimal reference and the compiled Namics).
+lat : flat : geometry : planar
+lat : flat : n_layers : 10
+lat : flat : gradients : 1
+lat : flat : lattice_type : simple_cubic
+lat : flat : bondlength : 3e-10
+
+mon : W : freedom : free
+mon : A : freedom : free
+mon : Na : freedom : free
+mon : Na : valence : 1
+mon : Cl : freedom : free
+mon : Cl : valence : -1
+
+state : AH : valence : 0
+state : AH : mon : A
+state : AM : valence : -1
+state : AM : mon : A
+
+state : H3O : valence : 1
+state : H3O : mon : W
+state : H2O : valence : 0
+state : H2O : mon : W
+state : OH : valence : -1
+state : OH : mon : W
+
+reaction : weak : equation : 1(AH) + 1(H2O) = 1(AM) + 1(H3O)
+reaction : weak : pK : 7
+
+reaction : auto : equation : 2(H2O) = 1(OH) + 1(H3O)
+reaction : auto : pK : 14
+
+state : H3O : alphabulk : 1e-7
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+mol : acid : composition : (A)1
+mol : acid : freedom : restricted
+mol : acid : theta : 0.1
+
+mol : Na : composition : (Na)1
+mol : Na : freedom : neutralizer
+
+mol : Cl : composition : (Cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.1
+
+output : kal : append : false
+kal : mon : W : alphabulk_H3O
+kal : mon : W : alphabulk_H2O
+kal : mon : W : alphabulk_OH
+kal : mon : A : alphabulk_AM
+kal : mon : A : alphabulk_AH
+kal : mon : A : theta_AM
+kal : mon : A : theta_exc_AM
+kal : mon : A : phibulk_AM
+kal : mol : Na : phibulk
+kal : mol : water : phibulk
+kal : mol : acid : mu
+kal : mol : acid : mu-AM
+kal : mol : acid : mu-AH
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+
+newton : isaac : tolerance : 1e-10
+
+start

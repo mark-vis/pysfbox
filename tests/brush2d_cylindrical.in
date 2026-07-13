@@ -1,0 +1,39 @@
+// 2-gradient CYLINDRICAL (r,z) regression: a polymer brush grafted on a fibre
+// core of radius 8 (offset_first_layer), pinned over a PATCH of the axial
+// range (z = 1..4), so it spreads both radially and axially -- a genuinely 2D
+// (r,z) field. The radial weights carry the shell-volume asymmetry
+// (finite-volume LatticeND); a z-uniform run reduces to the 1D cylindrical
+// lattice bit-for-bit (~1e-18), so this matches Namics LGrad2 by reduction.
+// This is the natural fibre/two-particle geometry (Namics has no spherical
+// 2-gradient). Committed as a reproducibility reference.
+lat : NN : gradients : 2
+lat : NN : geometry : cylindrical
+lat : NN : n_layers_x : 20
+lat : NN : n_layers_y : 10
+lat : NN : lowerbound_x : surface
+lat : NN : offset_first_layer : 8
+lat : NN : lowerbound_y : mirror
+lat : NN : upperbound_y : mirror
+
+mon : G : freedom : pinned
+mon : G : pinned_range : 1,1;1,4
+mon : A : freedom : free
+mon : W : freedom : free
+mon : A : chi_W : 0.5
+
+mol : brush : composition : (G)1(A)22
+mol : brush : freedom : restricted
+mol : brush : theta : 30
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : n : tolerance : 1e-9
+
+output : kal : append : false
+kal : mol : brush : theta
+kal : mol : brush : GN
+kal : mol : brush : phiMax
+
+output : pro : append : false
+pro : mol : brush : phi

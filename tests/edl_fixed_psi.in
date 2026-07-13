@@ -1,0 +1,66 @@
+// Electric double layer at a fixed-potential electrode (e.psi0/kT = -1):
+// the Namics example ElectricDoubleLayerFixedSurfacePotential. PySFBox
+// INTENTIONALLY DEVIATES from unpatched Namics here: the Namics fixedPsi0
+// Poisson branch has a doubled charge source (Debye lengths sqrt(2) too
+// short) — bug reported to the Namics authors. PySFBox uses the
+// correct flux-conservative equation; the diffuse-layer decay matches
+// discrete Debye theory to 5 decimals (0.75393/layer). The port mechanics
+// were first validated bug-compatibly against the oracle at machine
+// precision (phi 7e-12, psi 2e-10), so the deviation is exactly the
+// documented factor and nothing else. 4 Jul 2026.
+
+lat : mylat : gradients : 1
+lat : mylat : geometry : planar
+lat : mylat : n_layers : 100
+lat : mylat : lattice_type : simple_cubic
+lat : mylat : bondlength : 3e-10
+lat : mylat : lowerbound : surface
+
+mon : N : freedom : frozen
+mon : N : frozen_range : lowerbound
+
+mon : S : freedom : frozen   
+mon : S : frozen_range : 1;1
+mon : S : e.psi0/kT : -1
+
+mon : Na : valence : 1 
+mon : Cl : valence : -1
+mon : W : valence : 0
+
+mon : N : epsilon : 2
+mon : S : epsilon : 10
+mon : Na : epsilon : 20 
+mon : Cl : epsilon : 20
+mon : W : epsilon : 80
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+mol : Na : composition : (Na)1
+mol : Na : freedom : neutralizer
+
+mol : Cl : composition : (Cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.01
+
+newton : isaac : iterationlimit : 1000
+newton : isaac : tolerance : 1e-9
+newton : isaac : i_info : 100 
+
+output : pro : DOS : true 
+pro : mol : * : phi
+pro : sys : NN : q
+pro : sys : NN : psi
+
+
+output : kal : DOS : true
+output : kal : append : false
+
+kal : mol : * : phibulk
+kal : mol : * : theta
+kal : mol : * : theta_exc
+kal : mol : * : MU  
+kal : lat : mylat : n_layers
+kal : newton : isaac : residual  
+kal : sys : NN : grand_potential 
+start

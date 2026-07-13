@@ -1,0 +1,37 @@
+// search regression, sys grand_potential target: drive a restricted
+// adsorbing polymer's theta until the system grand potential hits a value.
+// Exercises the sys-target branch (System.grand_potential + the Namics
+// GetError sign for grand_potential) as opposed to the mol-target branch in
+// search_phibulk.in. Target -0.010 sits on the monotone low-theta side of
+// the GP(theta) curve (GP has a minimum near theta~25), so the downhill
+// bracket lands cleanly. Self-validating: sys grand_potential == target at
+// convergence. Runner-level regula falsi (Namics SuperIterate).
+lat : NN : n_layers : 50
+lat : NN : geometry : planar
+lat : NN : lowerbound : surface
+
+mon : X : freedom : free
+mon : W : freedom : free
+mon : X : chi_W : 0.5
+mon : X : chi_S : -1
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+
+mol : pol : composition : (X)40
+mol : pol : freedom : restricted
+mol : pol : theta : 15
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : n : tolerance : 1e-9
+newton : n : super_tolerance : 1e-8
+
+var : mol-pol : search : theta
+var : sys-NN : grand_potential : -0.010
+
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : phibulk
+kal : sys : NN : grand_potential

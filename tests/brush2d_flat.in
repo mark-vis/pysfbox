@@ -1,0 +1,41 @@
+// 2-gradient (flat, simple_cubic 5-point stencil) regression: a polymer brush
+// grafted on a PATCH of the lower-x wall (pinned over y = 1..6 only), so it
+// spreads laterally -- a GENUINELY 2D field (varies in both x and y). The
+// N-D lattice is the finite-volume LatticeND (pysfbox/latticend.py); the
+// physics is validated by exact reduction to the 1D brush (a y-uniform 2D run
+// reproduces the Namics-validated 1D result to the solver floor) and, for the
+// non-separable coupling here, against the compiled Namics LG2Planar
+// (validated against the compiled Namics 2D/3D output). This .kal/.pro is committed as a
+// reproducibility reference.
+lat : NN : gradients : 2
+lat : NN : geometry : flat
+lat : NN : n_layers_x : 20
+lat : NN : n_layers_y : 18
+lat : NN : lowerbound_x : surface
+lat : NN : upperbound_x : mirror
+lat : NN : lowerbound_y : mirror
+lat : NN : upperbound_y : mirror
+
+mon : G : freedom : pinned
+mon : G : pinned_range : 1,1;1,6
+mon : A : freedom : free
+mon : W : freedom : free
+mon : A : chi_W : 0.5
+
+mol : brush : composition : (G)1(A)25
+mol : brush : freedom : restricted
+mol : brush : theta : 15
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : n : tolerance : 1e-9
+
+output : kal : append : false
+kal : mol : brush : theta
+kal : mol : brush : GN
+kal : mol : brush : phiMax
+
+output : pro : append : false
+pro : mol : brush : phi
+pro : mol : W : phi

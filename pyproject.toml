@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pysfbox"
+version = "1.0.0"
+description = "Scheutjens-Fleer lattice self-consistent-field (SF-SCF) theory in pure Python/NumPy - a readable, extensively validated reimplementation with Namics/sfbox-compatible input and output"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Mark Vis", email = "m.vis@tue.nl" }]
+dependencies = ["numpy"]
+keywords = ["Scheutjens-Fleer", "self-consistent-field", "SCF", "polymer physics", "lattice SCF", "sfbox", "Namics"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+]
+
+[project.urls]
+Repository = "https://github.com/mark-vis/pysfbox"
+
+[tool.setuptools]
+packages = ["pysfbox"]

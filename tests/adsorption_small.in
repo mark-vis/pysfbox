@@ -1,0 +1,30 @@
+lat : flat : n_layers : 100
+lat : flat : lattice_type : simple_cubic
+lat : flat : geometry : planar
+lat : flat : gradients : 1
+
+mon : Si : freedom : frozen
+mon : Si : frozen_range : 1;1
+mon : A : freedom : free
+mon : W : freedom : free
+mon : A : chi_Si : -6
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+mol : pol : composition : (A)200
+mol : pol : freedom : free
+mol : pol : phibulk : 1e-4
+
+output : pro : append : true
+pro : mol : pol : phi
+pro : mol : water : phi
+
+kal : mol : pol : theta_exc
+kal : sys : noname : grand_potential
+kal : sys : noname : iterations
+
+newton : isaac : deltamax : 0.1
+newton : isaac : iterationlimit : 5000
+
+start 

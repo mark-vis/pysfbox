@@ -1,0 +1,46 @@
+// Charged (curved) regression 1: a positively-charged colloid pinned at
+// the centre of a SPHERICAL lattice, with counterions (neutralizer Na) and
+// added salt (Cl at phibulk 0.02) forming the diffuse double layer. The
+// curved Poisson equation (Namics LGrad1::UpdatePsi free branch: 3-point
+// flux balance with r^2 face weights and C = C0/(2pi)*fjc, source q*L) is
+// ported in system._psi_residual/_field_energy. Validated against the
+// compiled Namics on 5 Jul 2026: ion profiles agree to ~1e-9 relative
+// (the convergence floor), AND against analytic spherical Debye-Huckel:
+// psi decays as a perfect screened Coulomb exp(-kappa r)/r (R^2=0.9999967)
+// with the fitted decay matching discrete Debye theory to 0.1%.
+lat : S : geometry : spherical
+lat : S : n_layers : 50
+lat : S : gradients : 1
+lat : S : lattice_type : simple_cubic
+lat : S : bondlength : 3e-10
+
+mon : X : freedom : pinned
+mon : X : pinned_range : 1;1
+mon : X : valence : 1
+mon : W : freedom : free
+mon : Na : freedom : free
+mon : Na : valence : 1
+mon : Cl : freedom : free
+mon : Cl : valence : -1
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+mol : col : composition : (X)1
+mol : col : freedom : restricted
+mol : col : theta : 3
+
+mol : Na : composition : (Na)1
+mol : Na : freedom : neutralizer
+
+mol : Cl : composition : (Cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.02
+
+output : pro : append : false
+pro : mon : Na : phi
+pro : mon : Cl : phi
+
+newton : isaac : tolerance : 1e-9
+
+start

@@ -1,0 +1,43 @@
+// Small depletion case that exercises the Namics-compatibility features added
+// while porting the teaching exercises: geometry `flat`, the `tolerance : e-10`
+// typo (falls back to default like Namics), wildcard `*` output expansion, and
+// the mol properties phiM (bulk-layer value), Mu (chemical potential) and
+// free_energy (po). Reference cross-validated against the compiled Namics.
+lat : flat : n_layers : 50
+lat : flat : lattice_type : hexagonal
+lat : flat : geometry : flat
+lat : flat : gradients : 1
+lat : flat : lowerbound : surface
+lat : flat : upperbound : mirror
+
+mon : SURF : freedom : frozen
+mon : SURF : frozen_range : lowerbound
+mon : W : freedom : free
+mon : A : freedom : free
+
+mon : W : chi_A : 0.5
+mon : SURF : chi_A : 1
+
+mol : poly : composition : (A)100
+mol : poly : freedom : free
+mol : poly : phibulk : 1e-3
+mol : solvent : composition : (W)1
+mol : solvent : freedom : solvent
+
+newton : isaac : tolerance : e-10
+newton : isaac : iterationlimit : 10000
+
+// kal lines are kept grouped by category (all sys together, all mol together);
+// PySFBox groups output columns by category while Namics preserves input-line
+// order, so interleaving the two would reorder columns between the engines.
+output : kal : append : false
+kal : sys : noname : free_energy
+kal : sys : noname : grand_potential
+kal : sys : noname : free_energy (po)
+kal : mol : * : theta
+kal : mol : * : phiM
+kal : mol : * : Mu
+kal : mol : * : n
+output : pro : append : false
+pro : mol : * : phi
+start

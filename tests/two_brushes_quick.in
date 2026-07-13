@@ -1,0 +1,53 @@
+// Small two-interacting-brushes regression case (scaled-down version of
+// Two_brushes_interactingSurfaceBC.in, which scans 991 box sizes with N=2000
+// chains and is far too heavy for a test suite). Two opposing grafted brushes
+// in a 60-layer slit; single calculation. Reference output validated against
+// the compiled Namics binary (validated against the compiled Namics).
+
+lat : flat : n_layers : 60
+lat : flat : lattice_type : simple_cubic
+lat : flat : geometry : planar
+lat : flat : gradients : 1
+lat : flat : lowerbound : surface
+lat : flat : upperbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : S1 : freedom : frozen
+mon : S1 : frozen_range : upperbound
+
+mon : W : freedom : free
+mon : A : freedom : free
+mon : G : freedom : free
+mon : X : freedom : pinned
+mon : X : pinned_range : firstlayer
+mon : X1 : freedom : pinned
+mon : X1 : pinned_range : lastlayer
+
+mol : pol : composition : (X)1(A)58(G)1
+mol : pol : freedom : restricted
+mol : pol : theta : 5
+mol : pol1 : composition : (X1)1(A)28(G)1
+mol : pol1 : freedom : restricted
+mol : pol1 : theta : 10
+
+mol : water : freedom : solvent
+mol : water : composition : (W)1
+
+newton : isaac : method : pseudohessian
+newton : isaac : tolerance : 1e-7
+newton : isaac : iterationlimit : 5000
+newton : isaac : deltamax : 0.05
+
+// Namics quirks (this input runs unmodified in both engines): the default
+// system name is NN; a `kal : mol` line must precede the `kal : sys` lines;
+// `kal : lat : ...` is not accepted; `pro : ...` lines need the
+// `output : pro` declaration first.
+output : kal : append : false
+kal : mol : water : phiMax
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+output : pro : append : false
+pro : mol : pol : phi
+pro : mol : pol1 : phi
+start

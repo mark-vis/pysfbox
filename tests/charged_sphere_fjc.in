@@ -1,0 +1,56 @@
+// Charged (curved) regression 4: the spherical charged colloid + counterions
+// + salt of charged_sphere.in, but on a REFINED lattice (FJC_choices = 5,
+// i.e. fjc = 2 sub-layers per bond). Exercises the fjc>1 curved Poisson: the
+// 3-point flux balance keeps the integer-refined face radii (r, r^2) but the
+// source coefficient is refinement-consistent -- cyl C0/pi, sph C0/(2pi)*fjc,
+// with NO extra fjc. These are the SAME coefficients Namics' UpdatePsi uses
+// (LGrad1.cpp:675,690), but the compiled Namics is still fjc-too-strong at
+// fjc>1 because lattice.cpp:337 does bond_length/=fjc and bond_length feeds
+// only the Poisson prefactor C0 = e^2/(eps0 kT bond_length): the oracle's C0
+// is fjc too large, so its Debye length scales as kappa ~ sqrt(fjc) (measured
+// 1.04, 1.60, 2.35 at fjc = 1, 2, 4) and refining a charged run changes the
+// physics -- a Namics bug (reported to the Namics authors). PySFBox uses the
+// base bondlength and CONVERGES to the continuum Debye value (per project
+// policy: correct physics, not bug-compatibility). Physics validation:
+//
+// fjc_curved_charged_convergence.py fits psi(r) and shows fjc = 1/2/4 give a
+// constant, continuum-Debye screening length (R^2 > 0.9999). This committed
+// reference is PySFBox' own output -- a regression guard against future
+// code changes -- and INTENTIONALLY deviates from unpatched Namics at fjc>1.
+lat : S : geometry : spherical
+lat : S : n_layers : 30
+lat : S : gradients : 1
+lat : S : lattice_type : simple_cubic
+lat : S : FJC_choices : 5
+lat : S : bondlength : 3e-10
+
+mon : X : freedom : pinned
+mon : X : pinned_range : 1;1
+mon : X : valence : 1
+mon : W : freedom : free
+mon : Na : freedom : free
+mon : Na : valence : 1
+mon : Cl : freedom : free
+mon : Cl : valence : -1
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+mol : col : composition : (X)1
+mol : col : freedom : restricted
+mol : col : theta : 3
+
+mol : Na : composition : (Na)1
+mol : Na : freedom : neutralizer
+
+mol : Cl : composition : (Cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.02
+
+output : pro : append : false
+pro : mon : Na : phi
+pro : mon : Cl : phi
+
+newton : isaac : tolerance : 1e-9
+
+start

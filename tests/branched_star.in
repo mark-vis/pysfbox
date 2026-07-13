@@ -1,0 +1,42 @@
+// Branched regression 2: a 6-arm star (each arm (A)40(G)1, pinned centre
+// X) in SPHERICAL geometry -- exercises the tree engine on a curved
+// lattice. Composition @dend(X,(A)40(G)1,6). Validated against the
+// compiled Namics on 5 Jul 2026: phi profiles ~2.5e-9 relative, GN 1.5e-8,
+// free energy 3.5e-10, grand potential 1.4e-10. (Curved single-gradient
+// lattice + branched: geometry was already validated for linear chains to
+// 5e-13; here the star density integrates to theta exactly.)
+lat : S : geometry : spherical
+lat : S : n_layers : 60
+lat : S : gradients : 1
+lat : S : lattice_type : simple_cubic
+
+mon : X : freedom : pinned
+mon : X : pinned_range : 1;1
+mon : A : freedom : free
+mon : G : freedom : free
+mon : W : freedom : free
+mon : A : chi_W : 0.55
+mon : G : chi_W : -0.3
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+mol : star : composition : @dend(X,(A)40(G)1,6)
+mol : star : freedom : restricted
+mol : star : n : 1
+
+output : kal : append : false
+kal : mol : star : theta
+kal : mol : star : GN
+kal : mon : A : theta
+kal : mon : G : 1st_M_phi_z
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+output : pro : append : false
+pro : mol : star : phi
+pro : mon : A : phi
+pro : mon : G : phi
+
+newton : isaac : tolerance : 1e-9
+
+start

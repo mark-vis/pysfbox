@@ -1,0 +1,33 @@
+PySFBox
+Copyright (C) 2026 Mark Vis
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the LICENSE file for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+--------------------------------------------------------------------------
+Third-party notice: pysfbox/sfnewton.py
+--------------------------------------------------------------------------
+
+pysfbox/sfnewton.py is a Python/NumPy translation of sfnewton.cpp from
+sfbox/Namics. The original algorithm and C/C++ source are:
+
+    Author: Jan Scheutjens (1947-1992), Wageningen Agricultural University, NL.
+    Copyright (1980) (1981-1989) Wageningen Agricultural University, NL.
+    C++ translation: Peter Barneveld; masked/vector adaptation:
+    Frans Leermakers, Wageningen Agricultural University, NL.
+    Copyright (2018) Wageningen University, NL.
+
+That file carries the original Wageningen University copyright and reproduction
+notice in its own header, which governs that file; it is included in PySFBox
+with the permission of the copyright holders. The remainder of PySFBox is under
+the GPL-3.0-or-later terms in LICENSE.
+
+The Namics code itself is distributed by its authors under permissive terms
+("the 'namics' code can freely be used"); when results of Namics or PySFBox are
+used in publications, a corresponding reference is appreciated.
