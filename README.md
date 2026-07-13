@@ -1,5 +1,9 @@
 # PySFBox — Scheutjens–Fleer SCF lattice theory in pure Python/NumPy
 
+[![PyPI](https://img.shields.io/pypi/v/pysfbox.svg)](https://pypi.org/project/pysfbox/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21338367.svg)](https://doi.org/10.5281/zenodo.21338367)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
 Scheutjens–Fleer lattice SCF in pure Python/NumPy that **reads Namics input
 files and writes Namics output files**, so existing input files, analysis and
 plotting scripts, and course material keep working — no C++ toolchain required.
@@ -220,6 +224,14 @@ run unchanged on the compiled Namics — compatibility works in both directions.
   your own geometry the same way. Profiles, theta, theta_exc, and moments
   follow the Namics definitions exactly (`LGrad1::Moment`, `WeightedSum`).
 - Default tolerance 1e-7, iterationlimit 1000, deltamax 0.1 (as in Namics).
+
+## Citing PySFBox
+
+If you use PySFBox in your research, please cite it — GitHub's "Cite this
+repository" button uses `CITATION.cff`, and each release is archived on Zenodo
+with a DOI: [10.5281/zenodo.21338367](https://doi.org/10.5281/zenodo.21338367)
+(concept DOI, always resolving to the latest version). Please also cite the
+underlying sfbox/Namics work by Leermakers and co-workers.
 
 ## Acknowledgements & lineage
 

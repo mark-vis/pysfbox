@@ -27,4 +27,4 @@ keywords:
   - lattice model
   - computational chemistry
   - soft matter
-# doi: "10.5281/zenodo.XXXXXXX"   # add the Zenodo concept DOI once minted (see RELEASING.md)
+doi: "10.5281/zenodo.21338367"   # Zenodo concept DOI (always resolves to the latest version)
