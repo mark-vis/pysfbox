@@ -402,9 +402,21 @@ def _remap_layers(x_old, n_seg, M_old, M_new):
     initial guess only: keep the lower-wall half from the lower end and the
     upper-wall half from the upper end (so both surface regions survive a
     two-wall compression), pad the middle with u = 0 (bulk) when growing.
-    Works in refined (fjc-internal) units since M includes the ghosts."""
-    Xo = x_old.reshape(n_seg, M_old)
-    Xn = np.zeros((n_seg, M_new))
+    Works in refined (fjc-internal) units since M includes the ghosts.
+
+    The iteration vector is a stack of equal-length (M) blocks: one potential
+    field per iteration species, plus a trailing psi block when the system is
+    CHARGED (system.n_var adds one more M). All blocks are spatial profiles, so
+    every block -- u fields AND psi -- is remapped the same way; the number of
+    blocks is inferred from the vector length (n_seg is only a hint, and would
+    miss the psi block for charged/weak systems -- the bug this guards). Returns
+    None if the length is not an integer number of M-blocks, so the caller
+    falls back to a cold start rather than crashing."""
+    if M_old <= 0 or x_old.size % M_old != 0:
+        return None
+    n_blocks = x_old.size // M_old
+    Xo = x_old.reshape(n_blocks, M_old)
+    Xn = np.zeros((n_blocks, M_new))
     k = min(M_old, M_new)
     lo = k // 2
     hi = k - lo

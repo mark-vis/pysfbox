@@ -1,0 +1,87 @@
+// Regression: an n_layers SCAN on a CHARGED (weak) system, plus the
+// per-monomer and density/eps profile outputs.
+//
+// Two things this guards, both from Eleonora's spherical polyacid inputs
+// (13 Jul 2026):
+//   (1) the n_layers-scan warm-start remap used to CRASH on charged/weak
+//       systems -- _remap_layers assumed the iteration vector was
+//       n_species*M and reshaped it, but a charged system also carries the
+//       trailing psi block (n_var = (n_species+1)*M), so the reshape threw
+//       ValueError after the first scan step. Now every M-block (u fields
+//       AND psi) is remapped, so the scan warm-starts through every step.
+//   (2) the profile properties `mol : X : phi_<mon>` (per-monomer
+//       contribution to a molecule's density), `sys : X : free_energy_density`
+//       / `grand_potential_density` (the integrands of the scalars), and
+//       `sys : X : eps` (local relative permittivity).
+//
+// A pinned weak-polyacid star (X)1(A)30 at a spherical centre, titrating in
+// salt, counterions neutralizing -- same physics as charged_weak_sphere.in,
+// small and fast, scanned over three particle sizes.
+lat : S : geometry : spherical
+lat : S : n_layers : 60
+lat : S : gradients : 1
+lat : S : lattice_type : simple_cubic
+lat : S : bondlength : 3e-10
+
+mon : X : freedom : pinned
+mon : X : pinned_range : 1;1
+mon : W : freedom : free
+mon : A : freedom : free
+mon : Na : freedom : free
+mon : Na : valence : 1
+mon : Cl : freedom : free
+mon : Cl : valence : -1
+
+state : AH : valence : 0
+state : AH : mon : A
+state : AM : valence : -1
+state : AM : mon : A
+state : H3O : valence : 1
+state : H3O : mon : W
+state : H2O : valence : 0
+state : H2O : mon : W
+state : OH : valence : -1
+state : OH : mon : W
+
+reaction : weak : equation : 1(AH) + 1(H2O) = 1(AM) + 1(H3O)
+reaction : weak : pK : 6
+reaction : auto : equation : 2(H2O) = 1(OH) + 1(H3O)
+reaction : auto : pK : 14
+state : H3O : alphabulk : 1e-7
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+mol : star : composition : (X)1(A)30
+mol : star : freedom : restricted
+mol : star : theta : 40
+mol : Na : composition : (Na)1
+mol : Na : freedom : neutralizer
+mol : Cl : composition : (Cl)1
+mol : Cl : freedom : free
+mol : Cl : phibulk : 0.05
+
+output : kal : append : false
+kal : mol : star : theta
+kal : mol : star : theta_exc
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+
+output : pro : append : false
+pro : mol : star : phi
+pro : mol : star : phi_A
+pro : mol : star : phi_X
+pro : mol : water : phi_W
+pro : mon : A : phi
+pro : mon : A : phi-AM
+pro : sys : NN : psi
+pro : sys : NN : q
+pro : sys : NN : eps
+pro : sys : NN : free_energy_density
+pro : sys : NN : grand_potential_density
+
+newton : isaac : tolerance : 1e-9
+
+var : lat-S : scan : n_layers
+var : lat-S : scale : linear
+var : lat-S : end_value : 40
+var : lat-S : step : -10

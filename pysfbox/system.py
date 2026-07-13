@@ -818,6 +818,14 @@ class System:
         excluded from Omega (unlike free_energy). Validated against the compiled
         Namics at the shared convergence floor (~5e-8 relative,
         tests/two_brushes_quick.in); spot-check a new geometry the same way."""
+        return self.lat.weighted_sum(self.grand_potential_density())
+
+    def grand_potential_density(self):
+        """Per-layer grand-potential density: the integrand whose lattice
+        weighted_sum is grand_potential(). Exposed as the
+        `sys : <name> : grand_potential_density` profile (the scalar split by
+        site; the total is oracle-validated, the per-site split is not
+        separately validated column-by-column)."""
         lat = self.lat
         omega = np.zeros(lat.M)
         for m in self.molecules.values():
@@ -851,9 +859,9 @@ class System:
             omega += self.EE * self.eps_prof - 0.5 * self.q * self.psi
             omega *= self.ksam
             omega += (1.0 - self.ksam) * 0.5 * self.q * self.psi
-            return lat.weighted_sum(omega)
+            return omega
         omega *= self.ksam
-        return lat.weighted_sum(omega)
+        return omega
 
     def free_energy(self):
         """SF Helmholtz free energy (per kT), cf. System::GetFreeEnergy, incl.
@@ -861,6 +869,14 @@ class System:
         contributions. Validated against the compiled Namics (~6e-9 relative,
         tests/two_brushes_quick.in) and by dF/dtheta = mu (finite difference);
         spot-check a new geometry the same way."""
+        return self.lat.weighted_sum(self.free_energy_density())
+
+    def free_energy_density(self):
+        """Per-layer Helmholtz free-energy density: the integrand whose lattice
+        weighted_sum is free_energy(). Exposed as the
+        `sys : <name> : free_energy_density` profile (the scalar split by site;
+        the total is oracle-validated, the per-site split is not separately
+        validated column-by-column)."""
         lat = self.lat
         F = np.zeros(lat.M)
         # translational entropy: sum_mol phi_mol * log(N n / GN) / N
@@ -932,7 +948,7 @@ class System:
             # Namics GetFreeEnergy charged term: + q*psi/2 (added after the
             # KSAM cleanup, so it includes the surface sites)
             F = F + 0.5 * self.q * self.psi
-        return lat.weighted_sum(F)
+        return F
 
     def chemical_potential(self, mol):
         """SF molecule chemical potential (per kT), bulk reference; cf. Namics
@@ -1089,6 +1105,18 @@ class System:
         """Profile arrays for .pro output (interior incl. ghosts)."""
         if key == "mol" and name in self.molecules and prop == "phi":
             return self.molecules[name].phi
+        if key == "mol" and name in self.molecules and prop.startswith("phi_"):
+            # per-monomer contribution to a molecule's density
+            # (Namics underscore notation, e.g. mol : poly : phi_A). Zero
+            # when the molecule contains no such segment; NiN if the mon
+            # name is unknown.
+            mon = prop[len("phi_"):]
+            per = self.molecules[name].phi_per_seg
+            if mon in per:
+                return per[mon]
+            if mon in self.segments:
+                return np.zeros(self.lat.M)
+            return None
         if key == "mon" and name in self.segments and prop == "phi":
             return self.segments[name].phi
         if key == "mon" and name in self.segments:
@@ -1113,10 +1141,16 @@ class System:
             return None
         if key == "sys" and prop == "alpha":
             return self.alpha
+        if key == "sys" and prop == "free_energy_density":
+            return self.free_energy_density()
+        if key == "sys" and prop == "grand_potential_density":
+            return self.grand_potential_density()
         if key == "sys" and self.charged and prop == "psi":
             return self.psi
         if key == "sys" and self.charged and prop == "q":
             return self.q
+        if key == "sys" and self.charged and prop == "eps":
+            return self.eps_prof            # local relative permittivity
         return None
 
     def fill_profile_bounds(self, key, name, prop, arr):
