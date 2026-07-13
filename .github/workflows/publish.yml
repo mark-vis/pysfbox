@@ -1,0 +1,63 @@
+name: Publish to PyPI
+
+# Publishes pysfbox to PyPI when a version tag (e.g. v1.0.0) is pushed, via
+# PyPI Trusted Publishing (OIDC) — no API tokens or repository secrets.
+#
+# One-time setup on PyPI (https://pypi.org/manage/account/publishing/):
+#   add a Trusted Publisher for project `pysfbox`:
+#     Owner: mark-vis   Repository: pysfbox
+#     Workflow: publish.yml   Environment: pypi
+#   (a "pending publisher" can be created before the first release exists).
+#
+# Release: bump __version__ in pysfbox/__init__.py, commit, then
+#   git tag v<version> && git push --tags
+# See RELEASING.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Verify the tag matches the built version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ ! -f "dist/pysfbox-${TAG}.tar.gz" ]; then
+            echo "::error::tag v${TAG} does not match built version (dist: $(ls dist))"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pysfbox
+    permissions:
+      id-token: write        # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

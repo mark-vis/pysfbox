@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pysfbox"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Scheutjens-Fleer lattice self-consistent-field (SF-SCF) theory in pure Python/NumPy - a readable, extensively validated reimplementation with Namics/sfbox-compatible input and output"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,3 +28,7 @@ pysfbox = "pysfbox.__main__:main"
 
 [tool.setuptools]
 packages = ["pysfbox"]
+
+# single source of truth for the version: pysfbox/__init__.py __version__
+[tool.setuptools.dynamic]
+version = { attr = "pysfbox.__version__" }
