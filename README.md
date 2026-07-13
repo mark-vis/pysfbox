@@ -7,12 +7,13 @@ plotting scripts, and course material keep working — no C++ toolchain required
 **Install** (Python ≥ 3.9; the only dependency is NumPy):
 
 ```bash
-pip install git+https://github.com/mark-vis/pysfbox.git   # adds a `pysfbox` command to your PATH
-pysfbox my_input.in                                        # writes my_input.kal / my_input.pro
+pip install pysfbox            # adds a `pysfbox` command to your PATH
+pysfbox my_input.in            # writes my_input.kal / my_input.pro
 ```
 
+Or `pipx install pysfbox` for an isolated, always-on-PATH command-line tool.
 `pysfbox` runs from any folder and writes its `.kal`/`.pro` next to each input
-file. Or, without installing — just clone the repo (or drop the `pysfbox/`
+file. Without installing at all — just clone the repo (or drop the `pysfbox/`
 folder next to your inputs) and run the module directly:
 
 ```bash
