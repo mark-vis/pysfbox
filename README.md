@@ -18,6 +18,9 @@ an example collection — every supported feature has a small, commented `.in`
 file there (brushes, adsorption, charged walls, weak polyelectrolytes,
 branched molecules, 2D/3D grids, searches).
 
+Keyword reference: `REFERENCE.md` documents every input keyword — allowed
+values, defaults, and what each computes — as a lookup manual.
+
 ## Validation
 
 PySFBox is validated against the compiled Namics: dozens of regression cases
