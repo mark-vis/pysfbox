@@ -4,14 +4,24 @@ Scheutjens–Fleer lattice SCF in pure Python/NumPy that **reads Namics input
 files and writes Namics output files**, so existing input files, analysis and
 plotting scripts, and course material keep working — no C++ toolchain required.
 
+**Install** (Python ≥ 3.9; the only dependency is NumPy):
+
 ```bash
-pip install numpy                     # the only dependency
-python -m pysfbox my_input.in        # writes my_input.kal / my_input.pro
+pip install git+https://github.com/mark-vis/pysfbox.git   # adds a `pysfbox` command to your PATH
+pysfbox my_input.in                                        # writes my_input.kal / my_input.pro
 ```
 
-No installation beyond NumPy. Python ≥ 3.9. GPL-3.0-or-later (see `LICENSE`
-and `NOTICE`; `pysfbox/sfnewton.py` carries its own Wageningen copyright notice
-and governing terms).
+`pysfbox` runs from any folder and writes its `.kal`/`.pro` next to each input
+file. Or, without installing — just clone the repo (or drop the `pysfbox/`
+folder next to your inputs) and run the module directly:
+
+```bash
+pip install numpy
+python -m pysfbox my_input.in        # run from the folder that contains pysfbox/
+```
+
+GPL-3.0-or-later (see `LICENSE` and `NOTICE`; `pysfbox/sfnewton.py` carries its
+own Wageningen copyright notice and governing terms).
 
 Regression tests: `python tests/run_tests.py`. The `tests/` folder doubles as
 an example collection — every supported feature has a small, commented `.in`

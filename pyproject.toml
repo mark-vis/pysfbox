@@ -23,5 +23,8 @@ classifiers = [
 [project.urls]
 Repository = "https://github.com/mark-vis/pysfbox"
 
+[project.scripts]
+pysfbox = "pysfbox.__main__:main"
+
 [tool.setuptools]
 packages = ["pysfbox"]
