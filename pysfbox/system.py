@@ -134,7 +134,9 @@ class System:
                 lowerbound=last(lp, "lowerbound", "mirror"),
                 upperbound=last(lp, "upperbound", "mirror"),
                 offset_first_layer=float(last(lp, "offset_first_layer", 0.0)),
-                fjc=(FJC - 1) // 2)
+                fjc=(FJC - 1) // 2,
+                lam=(float(last(lp, "lambda")) if last(lp, "lambda") is not None
+                     else None))
         elif gradients in (2, 3):
             self.lat = self._build_latticeND(lp, gradients, settings)
         else:
@@ -1027,6 +1029,13 @@ class System:
                             return "real", st.alphabulk
                         if prop == "valence":
                             return "real", st.valence
+                        if prop == "phibulk":
+                            return "real", st.phibulk
+                        if prop == "theta":
+                            return "real", lat.weighted_sum(st.phi)
+                        if prop == "theta_exc":
+                            return "real", (lat.weighted_sum(st.phi)
+                                            - lat.volume * st.phibulk)
         if key == "mol" and name in self.molecules:
             m = self.molecules[name]
             # per-state chemical potential mu-STATE = Mu + ln(alphabulk_s)
@@ -1075,6 +1084,13 @@ class System:
                 if prop == f"theta_exc_{st.name}":
                     return "real", (lat.weighted_sum(st.phi)
                                     - lat.volume * st.phibulk)
+                # system-average state fraction alpha-STATE = theta_state/theta_mon
+                # (Namics 'mon : X : alpha-S': the mean degree of that state
+                # over the segment, e.g. the average degree of dissociation)
+                if prop in (f"alpha-{st.name}", f"alpha_{st.name}"):
+                    tot = lat.weighted_sum(s.phi)
+                    return "real", (lat.weighted_sum(st.phi) / tot
+                                    if tot > 0 else 0.0)
             pk = prop.replace(" ", "")           # chi_X / chi-X, like Segment
             if (pk.startswith("chi_") or pk.startswith("chi-")) \
                     and pk[4:] in self.segments:
@@ -1236,9 +1252,9 @@ class System:
         return U.ravel()
 
     # ---- solver --------------------------------------------------------------
-    # dense finite-difference Newton is affordable below this many variables
-    # (n_it_segs * M); above it the FD Jacobian (n residual evals per step)
-    # gets too expensive and we stay with Anderson only.
+    # the dense pseudohessian stores n^2 Hessian factors and pays O(n^2) work
+    # per secant update, so it is the primary only below this many variables
+    # (n_it_species * M); above it we stay with Anderson only.
     NEWTON_MAX_VARS = 4000
 
     def solve(self, x0=None, tolerance=1e-7, iterationlimit=1000,

@@ -21,7 +21,8 @@ LAMBDA = {"simple_cubic": 1.0 / 6.0, "hexagonal": 0.25}
 class Lattice1D:
     def __init__(self, n_layers, geometry="planar",
                  lattice_type="simple_cubic", lowerbound="mirror",
-                 upperbound="mirror", offset_first_layer=0.0, fjc=1):
+                 upperbound="mirror", offset_first_layer=0.0, fjc=1,
+                 lam=None):
         if geometry == "flat":          # Namics accepts flat as planar synonym
             geometry = "planar"
         self.geometry = geometry
@@ -42,7 +43,10 @@ class Lattice1D:
         interior = np.zeros(self.M, dtype=bool)         # flat interior mask
         interior[self.iv] = True                        # (uniform ND-style API)
         self.interior = interior
-        lam = LAMBDA[lattice_type]
+        # base step weight lambda_1: from lattice_type by default, but an
+        # explicit `lat : X : lambda : v` overrides it (sfbox/Namics allow
+        # a custom a-priori step probability, e.g. lambda = 1/3)
+        lam = LAMBDA[lattice_type] if lam is None else float(lam)
         self.lam = lam
         # physical coordinate of the interior sites (Namics .pro: (k+0.5)/fjc);
         # for fjc=1 this is k+0.5 = z-0.5, matching the original output/moments

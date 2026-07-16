@@ -18,10 +18,11 @@ The method keeps an approximate Hessian H in Gill-Murray LDL^T factored form
 It is a variable-metric (quasi-Newton) scheme: H is *updated* by rank-1 secant
 updates each step (``newhessian``/``updatpos``), never recomputed, and the
 Newton direction H p = -g is found by forward/back substitution on the factors
-(``gausa``/``gausb``). Because the factorization is maintained positive-definite,
-the direction is always a descent direction -- which is what lets it converge
-the stiff / near-singular problems (poor-solvent collapse, co-solvent) that
-plain Anderson mixing cannot.
+(``gausa``/``gausb``). Keeping the factorization positive-definite keeps the step
+well-defined and bounded through near-singular transients (and gives g.p < 0);
+actual progress is enforced by the trust region, the line search on ||g||, and
+the walking-backwards Hessian reset / deltamax decay below -- descent is
+tested, not assumed.
 
 Faithful-translation notes:
 - Storage matches the C code exactly: ``h`` is a flat length-nvar*nvar array in

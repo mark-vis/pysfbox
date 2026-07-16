@@ -44,10 +44,13 @@ PySFBox implements the corrected physics instead.
 ### Running
 
 ```bash
-python -m pysfbox my_input.in                 # writes my_input.kal / my_input.pro
-python -m pysfbox a.in b.in c.in              # several files, ONE process
-python -m pysfbox -h                          # short usage message
+pysfbox my_input.in                 # writes my_input.kal / my_input.pro
+pysfbox a.in b.in c.in              # several files, ONE process
+pysfbox -h                          # short usage message
 ```
+
+(`pysfbox` is the command that `pip install pysfbox` puts on the PATH; from a
+source checkout without installing, `python -m pysfbox` is the same runner.)
 
 - Output files are written **next to each input file** (same directory, base
   name with `.kal` / `.pro`), exactly as Namics does.
@@ -206,6 +209,7 @@ lat : L : n_layers : 100
 | `gradients` | `1`, `2`, `3` | `1` | number of spatial gradients; selects the 1-gradient `Lattice1D` or the N-gradient `LatticeND`. Any other value raises. |
 | `geometry` | see tables below | `planar` (1D) / `flat` (N-D) | coordinate system. `flat` and `planar` are synonyms. |
 | `lattice_type` | `simple_cubic`, `hexagonal` | `simple_cubic` | sets the neighbour-transition weight λ (`simple_cubic` → 1/6, `hexagonal` → 1/4). N-D accepts `simple_cubic` only. |
+| `lambda` | real in (0, ½) | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). 1-gradient only. |
 | `n_layers` | integer | *(required, 1D)* | number of physical layers z = 1..n_layers (see FJC refinement). Missing raises. |
 | `FJC_choices` | `3`, `5`, `7`, … | `3` | lattice refinement (freely-jointed-chain sub-layers). `3` = unrefined (fjc = 1). |
 | `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries). |
@@ -285,7 +289,6 @@ radial, `theta` colatitude, `phi` azimuth):
 |---|---|---|
 | 2 | `flat` / `planar` | (x, x) |
 | 2 | `cylindrical` | (r, z) |
-
 | 3 | `flat` / `planar` | (x, x, x) |
 
 The public tree supports exactly the geometries Namics has: **2D flat, 2D
@@ -715,7 +718,7 @@ A site fraction is a volume fraction; it converts to molarity through the
 lattice site density
 
 ```
-D = 1 / (N_A · bondlength³)   ≈ 61.5 M  for the default bondlength 3e-10 m
+D = 1 / (N_A · bondlength³)   ≈ 61.5 M  for bondlength 3e-10 m (as in the examples here)
                              (scales as bondlength⁻³)
 ```
 
@@ -780,7 +783,10 @@ object (see the output-properties section for the full tables):
 
 - `kal : mon : X : alphabulk_S | valence_S | phibulk_S | theta_S | theta_exc_S`
   (with `phibulk_S = phibulk_X · alphabulk_S`)
-- `kal : state : S : alphabulk | valence`
+- `kal : mon : X : alpha-S` — the system-average state fraction
+  `θ_S / θ_X` (the mean degree of that state over the segment, e.g. the average
+  degree of dissociation of a weak acid)
+- `kal : state : S : alphabulk | valence | phibulk | theta | theta_exc`
 - `kal : mol : M : mu-S` — per-state chemical potential `Mu + ln(alphabulk_s)`,
   chainlength-1 molecules only
 - `pro : mon : X : phi-S | alpha-S | u-S` — state density / local fraction /
@@ -865,7 +871,7 @@ newton : NN : deltamax : 0.1
 
 | param | values | default | meaning |
 |---|---|---|---|
-| `tolerance` | float | `1e-7` | convergence threshold on `max|g|` (the residual sup-norm) |
+| `tolerance` | float | `1e-7` | convergence threshold on the residual (the pseudohessian stage tests Namics' scaled norm; the fallback stages test `max|g|` directly) |
 | `iterationlimit` | int | `1000` | per-stage iteration budget |
 | `deltamax` | float | `0.1` | trust-region cap: max change in any potential per Newton step |
 | `m` | int | `8` | Anderson history depth (used by the Anderson fallback / `DIIS`/`Picard`/`LBFGS`) |
@@ -903,8 +909,8 @@ through to the next:
    starts; adaptive Tikhonov regularisation) — the fallback, the primary for
    non-default `method` values, and the primary for large problems (`n_var >
    4000`) in the public tree.
-2. **Extended-budget pseudohessian** from the original guess
-   (`max(iterationlimit, 3000)`), for `n_var <= 4000`.
+2. **Extended-budget pseudohessian** restarted from the original guess with
+   budget `max(iterationlimit, 3000)`, for `n_var <= 4000`.
 3. **One-shot full-Hessian anchor** (gated on `max|g| < 0.5` and
    `n_var <= 1000`).
 
@@ -1050,6 +1056,9 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 | `mon` | `phibulk_<state>` | real | per-state bulk volume fraction |
 | `mon` | `theta_<state>` | real | per-state total amount |
 | `mon` | `theta_exc_<state>` | real | per-state excess amount |
+| `mon` | `alpha-<state>`, `alpha_<state>` | real | system-average state fraction θ_state/θ_mon (mean degree of dissociation) |
+| `state` | `alphabulk`, `valence`, `phibulk` | real | bulk state fraction / valence / bulk volume fraction |
+| `state` | `theta`, `theta_exc` | real | total / excess amount of the state |
 | any | `<alias>-value` | int/real | value of the named `alias` (echo of a scanned parameter) |
 
 ### `pro` profile properties (`System.get_profile`)
@@ -1307,7 +1316,7 @@ property `N-value`.
 Three small, runnable inputs adapted from the regression suite
 (`tests/*.in`); the inline `//` comments use the comment syntax Namics accepts.
 Each is a single self-contained calculation; run any of them with
-`python -m pysfbox <file>.in`, which writes the `.kal`/`.pro` files next to the
+`pysfbox <file>.in`, which writes the `.kal`/`.pro` files next to the
 input. All features shown are in both the public and dev trees.
 
 Every input follows the same block order: `lat` (geometry), `mon` (segment
