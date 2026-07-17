@@ -360,6 +360,30 @@ class Molecule:
                 kids[i] = [pos_of[id(c)] for c in nd.children]
             self._tree_nodes = nodes
             self._tree_kids = kids
+            # subtree equivalence classes for the up-sweep: two nodes with the
+            # same (mon, child-class...) signature have identical up messages
+            # for ANY field, so each class is computed once and shared (the
+            # degeneracy memoisation Namics gets from raising <arm> to the
+            # functionality -- here for arbitrary repeated subtrees, e.g. the
+            # identical teeth of a comb). Children before parents, so child
+            # classes exist when a parent's signature is formed.
+            sig_class, self._up_class = {}, [0] * len(nodes)
+            for i in range(len(nodes) - 1, -1, -1):
+                sig = (nodes[i].mon,
+                       tuple(self._up_class[c] for c in kids[i]))
+                self._up_class[i] = sig_class.setdefault(sig, i)
+            # subtree sizes (pre-order => each subtree is the contiguous
+            # index range [i, i+size[i])) and class multiplicities, for the
+            # down-sweep aggregation of repeated subtrees
+            size = [1] * len(nodes)
+            for i in range(len(nodes) - 1, -1, -1):
+                for c in kids[i]:
+                    size[i] += size[c]
+            self._subtree_size = size
+            cnt = {}
+            for r in self._up_class:
+                cnt[r] = cnt.get(r, 0) + 1
+            self._up_class_count = cnt
             self.seq = [segments[nd.mon] for nd in nodes]
             counts = {}
             for nd in nodes:
@@ -571,7 +595,13 @@ class Molecule:
         up = [None] * n
         aup = [None] * n            # <up[i]>, cached for the down pass
         up_log = np.zeros(n)
+        klass = self._up_class
         for i in range(n - 1, -1, -1):          # children before parents
+            rep = klass[i]
+            if rep != i:                        # identical subtree already
+                up[i], up_log[i] = up[rep], up_log[rep]     # computed: share
+                aup[i] = aup[rep]               # (bit-identical, read-only)
+                continue
             x, lg = G1[nodes[i].mon], 0.0
             for c in kids[i]:                   # progressive renorm: a
                 x, lg = renorm(x * aup[c], lg + up_log[c])  # many-arm node
@@ -596,19 +626,39 @@ class Molecule:
             return self.phi
 
         # down sweep + density accumulation (same overflow cap as the linear
-        # composition law; up*<down> <= BIG^2 and no 1/G1 factor here)
+        # composition law; up*<down> <= BIG^2 and no 1/G1 factor here).
+        # Repeated identical subtrees (comb teeth, star/dendrimer arms) are
+        # AGGREGATED: the internal down operators are linear in the incoming
+        # message and shared across instances, so the instances' weighted
+        # messages are summed and each distinct subtree is walked ONCE (same
+        # fixed point; summation order differs from the naive walk at the
+        # 1e-16 level). Trees without repeats take the exact original path.
         cap = 709.0 - 2.0 * np.log(BIG) - np.log(N) - 10.0
         adn = [None] * n                        # <down[i]>; ones at the root
         adn[0] = np.ones(lat.M)
         down_log = np.zeros(n)
         per_seg = {mon: 0.0 for mon, _ in self.blocks}
-        for i in range(n):                      # parents before children
+        size, ccount = self._subtree_size, self._up_class_count
+        skip = np.zeros(n, dtype=bool)
+        agg = {}                # class rep -> [sum of e^(lg-ref)*<down>, ref]
+
+        def add_agg(c, d_avg, dlg):
+            a = agg.get(klass[c])
+            if a is None:
+                agg[klass[c]] = [d_avg, dlg]
+            elif dlg > a[1]:                    # running max as the log ref
+                a[0] = a[0] * np.exp(a[1] - dlg) + d_avg
+                a[1] = dlg
+            else:
+                a[0] = a[0] + d_avg * np.exp(dlg - a[1])
+
+        def visit(i):
             W = np.exp(min(lnC + up_log[i] + down_log[i], cap))
             per_seg[nodes[i].mon] = (per_seg[nodes[i].mon]
                                      + W * (up[i] * adn[i]))
             ks = kids[i]
             if not ks:
-                continue
+                return
             # leave-one-out products of <up[c]> via prefix/suffix arrays,
             # renormalised progressively (logs carried alongside)
             k = len(ks)
@@ -620,11 +670,30 @@ class Molecule:
                     pre[j] * aup[ks[j]], prelog[j] + up_log[ks[j]])
             suf, suflog = np.ones(lat.M), 0.0
             for j in range(k - 1, -1, -1):
+                c = ks[j]
                 d, dlg = renorm(pre[j] * suf, prelog[j] + suflog)
-                adn[ks[j]] = avg(d)
-                down_log[ks[j]] = dlg
-                suf, suflog = renorm(suf * aup[ks[j]],
-                                     suflog + up_log[ks[j]])
+                if ccount[klass[c]] > 1:        # repeated subtree: defer to
+                    add_agg(c, avg(d), dlg)     # the aggregated single walk
+                    skip[c:c + size[c]] = True
+                else:
+                    adn[c] = avg(d)
+                    down_log[c] = dlg
+                suf, suflog = renorm(suf * aup[c], suflog + up_log[c])
+
+        for i in range(n):                      # parents before children
+            if not skip[i]:
+                visit(i)
+        # deferred repeated subtrees, largest first: nested repeats inside a
+        # class walk keep accumulating and are processed afterwards (strict
+        # containment => strictly smaller, so every class is complete when
+        # its walk runs)
+        while agg:
+            rep = max(agg, key=lambda r: size[r])
+            adn[rep], down_log[rep] = agg.pop(rep)
+            skip[rep:rep + size[rep]] = False
+            for i in range(rep, rep + size[rep]):
+                if not skip[i]:
+                    visit(i)
         self.phi_per_seg = {mon: (v if isinstance(v, np.ndarray)
                                   else np.zeros(lat.M))
                             for mon, v in per_seg.items()}
