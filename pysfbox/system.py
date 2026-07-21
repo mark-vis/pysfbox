@@ -344,18 +344,22 @@ class System:
                         "fixed surface potential (e.psi0/kT) on a curved "
                         "lattice is not supported yet (the curved electrode "
                         "condition is not yet ported to PySFBox)")
-            # parity hazard (observed on the compiled binary 21 Jul 2026):
-            # Namics accepts epsilon only in 1..250 and SILENTLY REPLACES an
-            # out-of-range value by 80 (water!) -- not a clamp, not an
-            # error. PySFBox honors the declared value; warn so cross-engine
-            # comparisons are not silently comparing different dielectrics.
+            # diagnostic hazard (oracle-tested 21 Jul 2026): for epsilon
+            # outside 1..250 the compiled Namics PRINTS "Default value 80
+            # used instead" but does NOT substitute -- it runs with the
+            # declared value (segment.cpp:1096 only prints; verified: eps=0
+            # output differs from eps=80). Both engines therefore use the
+            # declared value; warn so the false Namics message does not
+            # mislead a cross-engine comparison, and because eps<1 is
+            # physically dubious (vacuum is 1).
             for seg in self.segments.values():
                 if not (1.0 <= seg.epsilon <= 250.0):
                     note = (f"mon {seg.name}: epsilon {seg.epsilon:g} is "
-                            "outside Namics' accepted range 1..250 -- the "
-                            "compiled Namics silently replaces it by 80; "
-                            "PySFBox honors the declared value, so the two "
-                            "engines will differ")
+                            "outside 1..250; PySFBox uses it as declared -- "
+                            "and so does the compiled Namics, DESPITE its "
+                            "misleading 'Default value 80 used instead' "
+                            "message (it only prints, never substitutes; "
+                            "oracle-verified)")
                     self.warnings.append(note)
                     if note not in _WARN_NOTES:     # once per process
                         _WARN_NOTES.add(note)
