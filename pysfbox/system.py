@@ -344,6 +344,22 @@ class System:
                         "fixed surface potential (e.psi0/kT) on a curved "
                         "lattice is not supported yet (the curved electrode "
                         "condition is not yet ported to PySFBox)")
+            # parity hazard (observed on the compiled binary 21 Jul 2026):
+            # Namics accepts epsilon only in 1..250 and SILENTLY REPLACES an
+            # out-of-range value by 80 (water!) -- not a clamp, not an
+            # error. PySFBox honors the declared value; warn so cross-engine
+            # comparisons are not silently comparing different dielectrics.
+            for seg in self.segments.values():
+                if not (1.0 <= seg.epsilon <= 250.0):
+                    note = (f"mon {seg.name}: epsilon {seg.epsilon:g} is "
+                            "outside Namics' accepted range 1..250 -- the "
+                            "compiled Namics silently replaces it by 80; "
+                            "PySFBox honors the declared value, so the two "
+                            "engines will differ")
+                    self.warnings.append(note)
+                    if note not in _WARN_NOTES:     # once per process
+                        _WARN_NOTES.add(note)
+                        print(f"  warning: {note}")
             self.psiMask = np.zeros(lat.M, dtype=bool)
             self.psi0_profile = np.zeros(lat.M)
             for seg in self.frozen:
@@ -850,10 +866,24 @@ class System:
             for b in range(a + 1, len(sp)):
                 chi = _species_chi(sp[a], sp[b])
                 if chi:
+                    # SYMMETRIC per-site booking, (phi_a<phi_b> +
+                    # phi_b<phi_a>)/2, matching Namics' full double loop
+                    # with chi/2 (GetGrandPotential): the L-weighted TOTAL
+                    # is identical either way (the site average is
+                    # self-adjoint under the volume weights -- detailed
+                    # balance), but the one-sided phi_a<phi_b> booking put
+                    # the contact energy of a steep interface on the wrong
+                    # layers wherever l_-1 != l_+1, deviating ~3-5% from
+                    # the oracle's grand_potential_density at a spherical
+                    # center (oracle-checked 21 Jul 2026; the fjc=1 micelle
+                    # matches the oracle's per-site value to 3e-9 after
+                    # symmetrising).
                     sa = self.side_phi(sp[b].seg, sp[b].phi)
+                    sb = self.side_phi(sp[a].seg, sp[a].phi)
                     pb_b = (self.phibulk_seg.get(sp[b].seg.name, 0.0)
                             * sp[b].alphabulk)
-                    omega -= chi * (sp[a].phi * sa - pb_a * pb_b)
+                    omega -= chi * (0.5 * (sp[a].phi * sa + sp[b].phi * sb)
+                                    - pb_a * pb_b)
         if self.charged:
             # Namics GetGrandPotential charged tail: add EE*eps - q*psi/2
             # inside the KSAM mask, plus q*psi/2 at the masked (surface)
@@ -1050,6 +1080,9 @@ class System:
                                         + np.log(st.alphabulk))
             theta = m.get_theta()
             table = {"theta": m.get_theta, "theta_exc": m.get_theta_exc,
+                     # Namics accepts both spellings (oracle-checked 21 Jul
+                     # 2026: identical columns)
+                     "thetaexc": m.get_theta_exc,
                      "phibulk": lambda: m.phibulk,
                      "Mu": lambda: self.chemical_potential(m),
                      "MU": lambda: self.chemical_potential(m),
@@ -1249,7 +1282,11 @@ class System:
                 "(supported: polymer_adsorption, membrane, micelle, "
                 "previous_result, none); guess files and membrane_torus "
                 "need the C++ Namics")
-        return U.ravel()
+        # pad with zeros for the trailing psi block (charged systems), else
+        # solve() silently rejects the guess by size (latent bug, fixed
+        # 21 Jul 2026 in lockstep with the dev tree)
+        x0 = U.ravel()
+        return np.concatenate([x0, np.zeros(self.n_var() - x0.size)])
 
     # ---- solver --------------------------------------------------------------
     # the dense pseudohessian stores n^2 Hessian factors and pays O(n^2) work
