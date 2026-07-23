@@ -279,10 +279,31 @@ def _target_error(system, target):
         if prop == "free_energy":
             fe = system.free_energy()
             return fe - val, fe
+        if prop == "Laplace_pressure":
+            # Drive the inside/outside pressure difference of a (typically
+            # delta-constraint-pinned) droplet/membrane to `val` -- the
+            # tensionless/pressure-balanced state that removes the DP*V
+            # (~R^3) volume term from Omega(R) before a Helfrich fit.
+            # LP = P_in - P_out = -(omega_in - omega_out), omega = the
+            # grand-potential density (local -pressure); omega_out is the
+            # LAST interior layer (bulk side, ~0 in a healthy setup), so LP
+            # equals the kal `Laplace_pressure` output (-gpd[fjc]) there.
+            # DELIBERATE deviation from Namics System::GetError case 2,
+            # which uses gpd[in] + gpd[out] - val: the SUM equals the
+            # pressure DIFFERENCE only when omega_out = 0, and for val != 0
+            # its root has the OPPOSITE sign of Namics' own printed
+            # Laplace_pressure. PySFBox drives the printed observable to
+            # the asked value; identical roots for the sane bulk-terminated
+            # val = 0 case.
+            lat = system.lat
+            if lat.gradients != 1:
+                raise NotImplementedError(
+                    "the Laplace_pressure search target is 1-gradient only")
+            gpd = system.grand_potential_density()
+            lp = float(-gpd[lat.fjc] + gpd[lat.M - 2 * lat.fjc])
+            return -(lp - val), lp
         raise NotImplementedError(
-            "var target 'Laplace_pressure' needs the sys:constraint:delta "
-            "membrane-balance machinery, which PySFBox does not have "
-            "(use the C++ Namics)")
+            f"var target 'sys : {prop}' is not supported")
     if item == "mol":
         prop_lookup = "Mu" if prop == "mu" else prop
         kind, cur = system.get_value("mol", obj, prop_lookup)
@@ -308,8 +329,9 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
     positive-definite bracket geometrically (the search variables -- theta,
     n, phibulk -- are all positive), then Illinois-weighted false position
     inside it. The root is unique, so this lands on the same solution Namics'
-    RF would; only the path differs (and the oracle's search examples need
-    the sys:constraint:delta machinery PySFBox lacks, so there is no
+    RF would; only the path differs (and the oracle's search examples use
+    the Laplace_pressure target, whose search wiring PySFBox still lacks --
+    the delta constraint itself landed 21 Jul 2026 -- so there is no
     trajectory to match anyway)."""
     if x_start == 0:
         raise ValueError("var search: the initial search value is 0; the "
@@ -496,7 +518,22 @@ def run_file(path, verbose=True):
                 seed = None                   # different problem structure
                 x_scan_prev = None
             elif x_prev.size != system.n_var():
-                seed = _remap_layers(x_prev, len(seg_now), M_prev, M_now)
+                if M_now == M_prev:
+                    # same grid and species, but a trailing block appeared or
+                    # disappeared (a delta constraint toggled between starts;
+                    # block order: species, psi, beta -- only the TAIL can
+                    # change when seg/M/fjc are equal). Keep the potential
+                    # blocks warm and zero-seed the new tail (beta = 0 is the
+                    # cold value). Load-bearing for the nucleation-barrier
+                    # workflow: start 1 nucleates a droplet via a pinned mon,
+                    # start 2 releases it and adds the constraint -- a cold
+                    # restart there would find the uniform solution instead.
+                    nv = system.n_var()
+                    seed = (np.concatenate([x_prev,
+                                            np.zeros(nv - x_prev.size)])
+                            if x_prev.size < nv else x_prev[:nv].copy())
+                else:
+                    seed = _remap_layers(x_prev, len(seg_now), M_prev, M_now)
                 x_scan_prev = None
             else:
                 seed = x_prev

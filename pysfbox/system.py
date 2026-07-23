@@ -387,6 +387,110 @@ class System:
                     "freedom : neutralizer requires a charged system")
             self.neutralizer = None
 
+        # ---- delta constraint (sys : constraint : delta) -----------------
+        # Pins an interface: at the delta_range sites the two
+        # delta_molecules' total densities are held at
+        # phitot_A - phitot_B = (r-1)/(r+1) with r = phi_ratio (at
+        # incompressibility, phitot_A + phitot_B ~= 1, that is the ratio
+        # phi_A/phi_B = r). Mechanics (Namics system.cpp:735-908 parsing,
+        # solve_scf.cpp:86 extra block, system.cpp:2113 PutU,
+        # system.cpp:2240-2247 residual, molecule.cpp:2654 ComputePhi):
+        # a Lagrange-multiplier field beta(z) joins the iteration stack as
+        # one extra M-block after psi; every segment of molecule A feels
+        # +beta (G1 *= exp(-beta)), of molecule B -beta; the constraint
+        # residual (phitot_B - phitot_A + R)*mask lives on the masked sites
+        # only. Off-mask beta entries are excluded from the solver AND
+        # masked out of the physics (self.beta is stored pre-masked), so a
+        # stale warm-start value at a moved mask site is inert -- Namics
+        # instead carries them as dead unknowns. The classic use (Namics
+        # example nucleation_barrier.in) fixes a free molecule's phibulk
+        # and walks delta_range to map Omega(R) away from equilibrium.
+        def sys_last(param, default=None):
+            v = default
+            for _, params in get_blocks(settings, "sys"):
+                v = last(params, param, v)
+            return v
+
+        constraint = sys_last("constraint")
+        self.constraintfields = constraint is not None
+        if self.constraintfields:
+            if constraint != "delta":
+                raise NotImplementedError(
+                    f"sys : constraint : {constraint} is not supported "
+                    "(only 'delta')")
+            if lat.gradients > 1:
+                raise NotImplementedError(
+                    "the delta constraint is 1-gradient only in PySFBox for "
+                    "now (Namics supports 2/3 gradients; use the C++ Namics)")
+            rng = sys_last("delta_range")
+            if rng is None:
+                raise ValueError(
+                    "sys : constraint : delta needs a 'delta_range'")
+            if rng.strip() == "file":
+                raise NotImplementedError(
+                    "delta_range : file (delta_inputfile) is not ported to "
+                    "PySFBox; list the sites as (z);(z2);... instead")
+            # fjc>1: coordinates are given in bondlength units (z scaled by
+            # fjc) or gritsize units (raw refined index), Namics
+            # system.cpp:756-780; mask index fjc-1+z*units (LGrad1::FillMask)
+            units = 1
+            if lat.fjc > 1:
+                runits = sys_last("delta_range_units")
+                if runits is None:
+                    raise ValueError(
+                        "FJC_choices > 3 with a delta constraint needs "
+                        "'sys : ... : delta_range_units : bondlength' (z in "
+                        "layers) or 'gritsize' (z in refined sub-layers)")
+                if runits == "bondlength":
+                    units = lat.fjc
+                elif runits != "gritsize":
+                    raise ValueError(
+                        f"delta_range_units : {runits} not recognized "
+                        "(use 'bondlength' or 'gritsize')")
+            self.delta_mask = np.zeros(lat.M)
+            for part in rng.split(";"):
+                part = part.strip()
+                if not (part.startswith("(") and part.endswith(")")):
+                    raise ValueError(
+                        f"delta_range entry '{part}': expected '(z)' "
+                        "(1-gradient)")
+                z = int(part[1:-1]) * units
+                if not 1 <= z <= lat.MX:   # MX is refined (= Namics FillMask)
+                    raise ValueError(
+                        f"delta_range site {part} out of bounds")
+                self.delta_mask[lat.fjc - 1 + z] = 1.0
+            dmols = sys_last("delta_molecules")
+            if dmols is None:
+                raise ValueError(
+                    "sys : constraint : delta needs 'delta_molecules : A;B' "
+                    "(two molecule names)")
+            names = [p.strip() for p in dmols.split(";")]
+            if len(names) != 2 or names[0] == names[1]:
+                raise ValueError(
+                    "delta_molecules must name two DIFFERENT molecules "
+                    "separated by ';'")
+            for nm in names:
+                if nm not in self.molecules:
+                    raise ValueError(
+                        f"delta_molecules: molecule '{nm}' not found")
+            self.delta_molecules = tuple(self.molecules[nm] for nm in names)
+            ratio = sys_last("phi_ratio")
+            if ratio is None:
+                raise ValueError(
+                    "sys : constraint : delta needs 'phi_ratio' (typically "
+                    "1, or the keyword 'critical_ratio')")
+            if ratio == "critical_ratio":
+                # sqrt(N_A/N_B): the ratio of the two critical densities
+                # (Namics system.cpp:899-901)
+                molA, molB = self.delta_molecules
+                self.phi_ratio = float(np.sqrt(molA.N / molB.N))
+            else:
+                self.phi_ratio = float(ratio)
+                if self.phi_ratio <= 0:
+                    raise ValueError("phi_ratio must be positive")
+            self.delta_R = (self.phi_ratio - 1.0) / (self.phi_ratio + 1.0)
+        self.beta = np.zeros(lat.M)
+
         # per-segment-type bulk fractions (for u_int reference and moments);
         # refreshed every iteration by _update_bulk (restricted molecules
         # contribute their implied bulk density, which depends on GN)
@@ -447,7 +551,9 @@ class System:
     def n_var(self):
         n = len(self.it_species) * self.lat.M
         if self.charged:
-            n += self.lat.M                 # the psi block (last)
+            n += self.lat.M                 # the psi block
+        if self.constraintfields:
+            n += self.lat.M                 # the beta block (last)
         return n
 
     def unpack(self, x):
@@ -464,6 +570,10 @@ class System:
             pm = np.zeros(self.lat.M, dtype=bool)
             pm[self.lat.iv] = True
             m = np.concatenate([m, pm])
+        if self.constraintfields:
+            # only the delta_range sites are real beta unknowns (Namics
+            # carries the full M block with g=0 dead entries instead)
+            m = np.concatenate([m, self.delta_mask > 0])
         return m
 
     def _update_bulk(self):
@@ -558,12 +668,31 @@ class System:
             for st, w in zip(s.states, weights):
                 st.alpha_prof = np.where(W > 0, w / W_safe, st.alphabulk)
             G1[s.name] = W * self.gmask[s.name]
+        # delta constraint: molecule A's segments all feel +beta, molecule
+        # B's -beta (Namics Molecule::ComputePhi(BETA,+-1), molecule.cpp:
+        # 2654-2692 -- there G1 is multiplied in place and divided back out;
+        # here each delta molecule simply propagates a modified G1 dict,
+        # which the composition law divides by consistently). self.beta is
+        # pre-masked (zero off the delta_range sites) and clipped like u.
+        if self.constraintfields:
+            b = np.clip(self.beta, -U_CLIP, U_CLIP)
+            molA, molB = self.delta_molecules
+            _dfac = {molA.name: np.exp(-b), molB.name: np.exp(b)}
+
+            def G1_for(m):
+                f = _dfac.get(m.name)
+                if f is None:
+                    return G1
+                return {k: v * f for k, v in G1.items()}
+        else:
+            def G1_for(m):
+                return G1
         # non-solvent, non-constrained molecules first: their normalisation
         # (phibulk- or theta-based) does not depend on the solvent's bulk
         # fraction ...
         for m in self.molecules.values():
             if m is not self.solvent and m is not self.neutralizer:
-                m.compute_phi(G1)
+                m.compute_phi(G1_for(m))
         # ... which is refreshed from their current GN before the solvent
         # AND the neutralizer are evaluated -- both have their bulk fraction
         # SET by _update_bulk (the neutralizer by electroneutrality), so like
@@ -573,8 +702,8 @@ class System:
         # (system.cpp:2633-2650) -- there is NO lag there.
         self._update_bulk()
         if self.neutralizer is not None:
-            self.neutralizer.compute_phi(G1)
-        self.solvent.compute_phi(G1)
+            self.neutralizer.compute_phi(G1_for(self.neutralizer))
+        self.solvent.compute_phi(G1_for(self.solvent))
         # total per segment type (solution species)
         for s in self.it_segs:
             s.phi = sum((m.phi_per_seg.get(s.name, 0.0)
@@ -607,9 +736,14 @@ class System:
     def residual(self, x):
         lat = self.lat
         u = self.unpack(x)
+        S = len(self.it_species)
+        if self.constraintfields:
+            # beta is the LAST M-block; store it pre-masked so off-mask
+            # entries (dead unknowns) can never leak into the physics
+            nb = (S + (1 if self.charged else 0)) * lat.M
+            self.beta = x[nb:nb + lat.M] * self.delta_mask
         if self.charged:
-            S = len(self.it_species)
-            psi_raw = x[S * lat.M:]
+            psi_raw = x[S * lat.M:(S + 1) * lat.M]
             # FIDELITY NOTE (matches Namics PutU/DoElectrostatics order):
             # the segment weights and the field energy EE use the RAW
             # iterated psi -- fixed-potential sites are filtered out of the
@@ -657,10 +791,16 @@ class System:
         g += incompr
         g *= self.ksam
         self.phitot = phitot
-        if not self.charged:
-            return g.ravel()
-        g_psi = self._psi_residual(psi_raw, psib, phitot)
-        return np.concatenate([g.ravel(), g_psi])
+        parts = [g.ravel()]
+        if self.charged:
+            parts.append(self._psi_residual(psi_raw, psib, phitot))
+        if self.constraintfields:
+            # constraint residual (Namics system.cpp:2240-2246): at the
+            # masked sites drive phitot_A - phitot_B to R = (r-1)/(r+1)
+            molA, molB = self.delta_molecules
+            parts.append((molB.phi - molA.phi + self.delta_R)
+                         * self.delta_mask)
+        return parts[0] if len(parts) == 1 else np.concatenate(parts)
 
     # ---- electrostatics (planar, fjc = 1; cf. LG1Planar.cpp) ---------------
     def _field_energy(self, psib):
@@ -888,6 +1028,13 @@ class System:
                             * sp[b].alphabulk)
                     omega -= chi * (0.5 * (sp[a].phi * sa + sp[b].phi * sb)
                                     - pb_a * pb_b)
+        if self.constraintfields:
+            # constraint-field work term (Namics GetGrandPotential,
+            # system.cpp:3288-3292: GP_accum -= log(BETA)*(phiA-phiB) with
+            # the accumulated sign flipped at the end, Norm(GP,-1) -- so the
+            # final Omega density gets -beta*(phitot_A - phitot_B))
+            molA, molB = self.delta_molecules
+            omega -= self.beta * (molA.phi - molB.phi)
         if self.charged:
             # Namics GetGrandPotential charged tail: add EE*eps - q*psi/2
             # inside the KSAM mask, plus q*psi/2 at the masked (surface)
@@ -932,6 +1079,13 @@ class System:
         u = self._u_current
         for i, sp in enumerate(self.it_species):
             F -= sp.phi * u[i]
+        if self.constraintfields:
+            # the -phi*u accounting for the constraint field: molecule A's
+            # segments felt u+beta, B's u-beta, and beta is not in the
+            # per-species u above (Namics GetFreeEnergy, system.cpp:3057-3061:
+            # F += log(BETA)*(phitot_A - phitot_B) with log(BETA) = -beta)
+            molA, molB = self.delta_molecules
+            F -= self.beta * (molA.phi - molB.phi)
         if self.charged:
             # the field term uses the FULL potential, like Namics' phi*ln(G1)
             # with G1 = exp(-(u + v*psi - eps*EE)): add the electrostatic
@@ -1048,6 +1202,21 @@ class System:
         if key == "sys":
             if prop == "grand_potential":
                 return "real", self.grand_potential()
+            # Laplace pressure = -Omega density in the first interior layer
+            # (Namics PushOutput: -GrandPotentialDensity[fjc]; the bulk side
+            # has Omega density -> 0, so this is the inside/outside pressure
+            # difference of a droplet/micelle pinned by the delta constraint).
+            # CAVEAT: the per-site Omega split is a convention (only totals
+            # are physical) and PySFBox's differs from Namics by ~3-5% at a
+            # curved center (oracle-checked 21 Jul 2026, fjc=1 and fjc=2
+            # spherical micelles; the TOTAL grand_potential agrees at the
+            # floor). Fine for trends/derivatives in R; do not mix engines
+            # within one Laplace-pressure curve.
+            if prop == "Laplace_pressure" and self.lat.gradients == 1:
+                return "real", float(
+                    -self.grand_potential_density()[self.lat.fjc])
+            if prop == "phi_ratio" and self.constraintfields:
+                return "real", self.phi_ratio
             # free_energy (po) is Namics' "GP + n*mu" route to the same F
             if prop == "free_energy" or prop.replace(" ", "") == "free_energy(po)":
                 return "real", self.free_energy()
@@ -1194,6 +1363,10 @@ class System:
             return None
         if key == "sys" and prop == "alpha":
             return self.alpha
+        if key == "sys" and prop == "beta" and self.constraintfields:
+            # the delta-constraint Lagrange field (PySFBox extension --
+            # Namics does not expose it; nonzero only on delta_range sites)
+            return self.beta
         if key == "sys" and prop == "free_energy_density":
             return self.free_energy_density()
         if key == "sys" and prop == "grand_potential_density":

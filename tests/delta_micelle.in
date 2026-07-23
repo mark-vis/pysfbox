@@ -1,0 +1,90 @@
+// Delta-constraint regression (sys : constraint : delta): Anne Floor's
+// E8C12 micelle-compression workflow, trimmed. A (PEO)24(CC)10 micelle is
+// nucleated by a pinned core (start 1), released (start 2), then the
+// core/solvent ratio at layer 5 is pinned by the delta constraint: first at
+// the equilibrium ratio (start 3, a consistency no-op -- beta stays ~0),
+// then compressed below equilibrium (starts 4-5, beta engages and theta
+// drops). Spherical, hexagonal, FJC_choices 5 (fjc = 2, so delta_range is
+// given in bondlength units and maps to refined site fjc-1+z*fjc).
+//
+// ORACLE-VALIDATED 21 Jul 2026 against ../Namics/bin/namics (with the
+// sys : overflow_protection : true shim) on the full 52-start parent scan
+// (phi_ratio 0.9424 -> 0.0025): theta <= 8.5e-8, mu <= 6.7e-9, F <= 4.9e-7,
+// theta_exc <= 1.1e-7 relative; GP tracks to ~1e-6 over the whole
+// compression curve (worst 4.7e-5 at the flat near-equilibrium points,
+// convergence-floor wiggle). Both engines fail at the same physical corner
+// (phi_ratio <= 0.0425; Namics warns and writes unconverged rows, PySFBox
+// raises). Internal anchors: phiA-phiB = R at the mask to the solver floor;
+// Legendre F = GP + sum n*mu to 3e-8 with the beta work terms in F and GP.
+// 'thetaexc' is a Namics-accepted alias of theta_exc (oracle-checked).
+// Laplace_pressure (= -grand_potential_density[fjc]) matches the oracle
+// at the floor since grand_potential_density adopted Namics' SYMMETRIC
+// per-site chi booking (21 Jul 2026; the one-sided booking deviated
+// ~3-5% at the spherical center while the total was identical).
+
+mon : PEO : freedom : free
+mon : W : freedom : free
+
+mon : CC : freedom : pinned
+mon : CC : pinned_range : 1;5
+
+mon : PEO : chi_CC : 0.3
+mon : PEO : chi_W : 0.4
+mon : CC : chi_W : 2.5
+
+mol : pol : composition : (PEO)24(CC)10
+mol : pol : freedom : restricted
+mol : pol : theta : 1090
+
+mol : solvent : composition : (W)1
+mol : solvent : freedom : solvent
+
+lat : mylat : n_layers : 100
+lat : mylat : lattice_type : hexagonal
+lat : mylat : geometry : spherical
+lat : mylat : FJC_choices : 5
+
+start
+
+mon : CC : freedom : free
+
+start
+
+output : kal : append : false
+
+kal : sys : noname : free_energy
+kal : sys : noname : grand_potential
+kal : sys : noname : phi_ratio
+kal : sys : noname : Laplace_pressure
+kal : mol : pol : theta
+kal : mol : pol : mu
+kal : mol : pol : phibulk
+kal : mol : pol : theta_exc
+kal : mol : pol : thetaexc
+
+mol : pol : composition : (PEO)24(CC)10
+mol : pol : freedom : free
+mol : pol : phibulk : 3.38676636e-05
+
+sys : noname : constraint : delta
+sys : noname : delta_molecules : pol;solvent
+sys : noname : delta_range : (5)
+sys : noname : phi_ratio : 0.9423599057647444
+sys : noname : delta_range_units : bondlength
+
+start
+
+sys : noname : phi_ratio : 0.8025
+
+start
+
+output : pro : append : false
+
+pro : mol : pol : phi
+pro : mol : solvent : phi
+pro : sys : noname : beta
+pro : sys : noname : grand_potential_density
+
+sys : noname : phi_ratio : 0.5225
+
+start

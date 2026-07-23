@@ -1,0 +1,57 @@
+// Laplace_pressure search-target regression: the E8C12 micelle pinned by
+// the delta constraint, with the particle amount theta searched until the
+// inside/outside pressure difference vanishes (the tensionless state that
+// removes the DP*V ~ R^3 term from Omega(R) before a Helfrich fit --
+// Anne Floor's workflow, 21 Jul 2026). Self-validating (the kal
+// Laplace_pressure column equals the target 0 at convergence) AND
+// oracle-validated: the compiled Namics finds the same theta root,
+// 529.15885 vs PySFBox 529.15830 (1e-6 rel; mu to 4e-7) -- valid here
+// because this case is NEUTRAL (the oracle's fjc>1 CHARGED Poisson bug
+// does not apply). Namics' inner solves during its super-iteration stop
+// unconverged (residual ~1e-2..1e-3 warnings); PySFBox's are at 1e-7.
+
+mon : PEO : freedom : free
+mon : W : freedom : free
+
+mon : CC : freedom : pinned
+mon : CC : pinned_range : 1;5
+
+mon : PEO : chi_CC : 0.3
+mon : PEO : chi_W : 0.4
+mon : CC : chi_W : 2.5
+
+mol : pol : composition : (PEO)24(CC)10
+mol : pol : freedom : restricted
+mol : pol : theta : 1090
+
+mol : solvent : composition : (W)1
+mol : solvent : freedom : solvent
+
+lat : mylat : n_layers : 100
+lat : mylat : lattice_type : hexagonal
+lat : mylat : geometry : spherical
+lat : mylat : FJC_choices : 5
+
+start
+
+mon : CC : freedom : free
+
+start
+
+output : kal : append : false
+
+kal : sys : noname : Laplace_pressure
+kal : sys : noname : grand_potential
+kal : mol : pol : theta
+kal : mol : pol : mu
+
+sys : noname : constraint : delta
+sys : noname : delta_molecules : pol;solvent
+sys : noname : delta_range : (5)
+sys : noname : phi_ratio : 0.9423599057647444
+sys : noname : delta_range_units : bondlength
+
+var : mol-pol : search : theta
+var : sys-noname : Laplace_pressure : 0
+
+start

@@ -838,6 +838,11 @@ sys : NN : initial_guess : polymer_adsorption
 |---|---|---|---|
 | `initial_guess` | `polymer_adsorption`, `membrane`, `micelle`, `previous_result`, `none` | `none` | starting potentials for the **first** calculation only |
 | `overflow_protection` | `true` / `false` | (ignored) | accepted for Namics input compatibility, but a **no-op** — see below |
+| `constraint` | `delta` | (off) | pin an interface — see the delta-constraint subsection below |
+| `delta_range` | `(z)` or `(z1);(z2);...` | — | the pinned site(s), required with `constraint : delta` |
+| `delta_molecules` | `A;B` | — | the two molecules whose local ratio is pinned |
+| `phi_ratio` | positive real or `critical_ratio` | — | target ratio r; `critical_ratio` = √(N_A/N_B) |
+| `delta_range_units` | `bondlength` / `gritsize` | — | required at `FJC_choices > 3`: `delta_range` in layers (×fjc) or refined sub-layers |
 
 **`initial_guess`.** Applied only to the first calculation of a run (exactly
 like Namics: after the first solve the type resets to `previous_result`, and
@@ -860,6 +865,35 @@ like Namics: after the first solve the type resets to `previous_result`, and
 everywhere (long and strongly-adsorbing chains cannot overflow), so no overflow
 guard is needed. The key is accepted and ignored — put it in inputs shared with
 the compiled Namics (whose recent builds nag without it) at no cost here.
+
+**The delta constraint (`constraint : delta`).** Pins the local composition of
+two molecules at the `delta_range` site(s): a Lagrange-multiplier field β(z)
+joins the iteration (one extra block of unknowns) and drives
+φ_A − φ_B = (r−1)/(r+1) there, with r = `phi_ratio` (at incompressibility
+that is the ratio φ_A/φ_B = r). Molecule A (first in `delta_molecules`)
+propagates with G1·e^(−β), B with G1·e^(+β); the β work term −β(φ_A−φ_B)
+enters both the free energy and the grand potential, so F = Ω + Σnμ holds.
+
+```
+sys : NN : constraint : delta
+sys : NN : delta_molecules : pol;solvent
+sys : NN : delta_range : (5)
+sys : NN : phi_ratio : 0.9
+sys : NN : delta_range_units : bondlength    // only needed at FJC_choices > 3
+```
+
+The classic workflow (cf. the Namics `nucleation_barrier.in` example, and the
+micelle-compression regression `tests/delta_micelle.in`): nucleate a
+micelle/droplet (pinned core), release it, then fix the micelle-former's
+`phibulk` and scan `phi_ratio` (or `delta_range`) over `start` blocks — the
+constraint holds the object at an off-equilibrium size while `grand_potential`
+traces the free-energy landscape Ω(size) that equilibrium SCF alone cannot
+reach. Scans warm-start through constraint changes (β re-seeds at 0 when the
+constraint first appears). **Raises:** `delta_range : file`
+(`delta_inputfile`), the constraint on `gradients > 1`, a `constraint` value
+other than `delta`, missing `delta_range`/`delta_molecules`/`phi_ratio`.
+Oracle-validated on a 52-start micelle-compression scan (θ ≤ 8.5e-8,
+μ ≤ 6.7e-9, Ω ~1e-6 along the curve).
 
 ### `newton : <name> : ...`
 
@@ -1027,6 +1061,8 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 | `lat` | `n_layers` | int | number of interior layers (1-D `MX`, or ∏ dims for N-D) |
 | `lat` | `volume` | real | total lattice volume (Σ site volumes) |
 | `sys` | `grand_potential` | real | grand potential Ω (per unit area / normalised as in Namics) |
+| `sys` | `Laplace_pressure` | real | −Ω-density in the first interior layer (1-gradient; the inside/outside pressure difference of a pinned droplet/micelle; per-site Ω split follows Namics' symmetric χ booking) |
+| `sys` | `phi_ratio` | real | the delta-constraint target ratio r (constraint runs only) |
 | `sys` | `free_energy`, `free_energy(po)` | real | Helmholtz free energy F (both spellings map to F; `(po)` is Namics' Ω + Σnμ route to the same value) |
 | `sys` | `iterations` | int | solver iteration count (solver-dependent; ignored in regression diffs) |
 | `sys` | `residual` | real | final residual norm (solver-dependent) |
@@ -1074,6 +1110,7 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 | `sys` | `alpha` | incompressibility (Lagrange) field α(z) |
 | `sys` | `psi` | electrostatic potential ψ(z) — charged systems only |
 | `sys` | `q` | charge-density profile q(z) — charged systems only |
+| `sys` | `beta` | the delta-constraint Lagrange field β(z) (PySFBox extension — Namics does not expose it; nonzero only on `delta_range` sites) |
 
 `psi`/`q` return nothing (skipped with a warning) on a neutral system. With
 `write_bounds : true`, potentials/intensive fields (`psi`, `u`, `alpha`,
@@ -1228,20 +1265,27 @@ searched quantity (the search starts from it; `theta` may be implied by
 |---|---|---|
 | `sys` | `grand_potential` | drive Ω to the value |
 | `sys` | `free_energy` | drive F to the value |
+| `sys` | `Laplace_pressure` | drive the inside/outside pressure difference −ω(first interior) + ω(last interior) to the value (1-gradient; typically 0, the pressure-balanced state of a delta-constraint-pinned droplet/membrane that removes the ΔP·V ~ R³ term from Ω(R) before a Helfrich fit) |
 | `mol` | `mu` | drive chemical potential to a **numeric** value |
 | `mol` | `theta` / `n` / `phibulk` | drive that molecule quantity to the value |
 
-Rejected (raise): `sys : Laplace_pressure` (needs the `sys:constraint:delta`
-membrane-balance machinery PySFBox lacks); a `mu` target naming *another*
-molecule (`eq_to_mu` equilibration) or the equate-to-solvent / balance-membrane
-searches. A `search` without a target, or a target without a `search`, raises a
+For `Laplace_pressure` PySFBox drives its own printed kal observable to the
+target — a DELIBERATE deviation from Namics' GetError case 2 (the sum
+ω(in)+ω(out), which equals the pressure difference only when ω_out = 0 and
+for a nonzero target has the opposite sign of Namics' own printed
+`Laplace_pressure`); the roots coincide in the sane bulk-terminated
+target-0 case (oracle-confirmed on `tests/search_laplace.in`).
+
+Rejected (raise): a `mu` target naming *another* molecule (`eq_to_mu`
+equilibration) or the equate-to-solvent / balance-membrane searches. A
+`search` without a target, or a target without a `search`, raises a
 "lonely" error.
 
 **Super-iteration controls** (read from the `newton` block):
 
 | param | default | meaning |
 |---|---|---|
-| `super_tolerance` | `10 × tolerance` | target-error tolerance |
+| `super_tolerance` | `10 × tolerance` | target-error tolerance (don't set it below the target observable's noise floor at the inner tolerance — for `Laplace_pressure` at inner 1e-7 that is ~1e-5) |
 | `super_deltamax` | `0.5` | base growth factor for the bracket expansion |
 | `super_iterationlimit` | `max(iterationlimit // 10, 30)` | max super-iterations (each = one full SCF) |
 
