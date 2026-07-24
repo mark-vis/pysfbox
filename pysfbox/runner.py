@@ -338,17 +338,22 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
                          "search scales by it (declare a nonzero start)")
 
     def rf(X):
-        # a failed inner SCF while marching the search variable almost always
-        # means the target is unreachable/non-monotone, not that the inner
-        # deltamax is wrong -- say so
+        # a failed inner SCF while marching the search variable can mean two
+        # things: the probe stepped too far from the last converged state
+        # (the bracket expands by a factor 1 + super_deltamax, and e.g. a
+        # delta-pinned FLAT interface tolerates only tiny relative theta
+        # moves), or the target really is unreachable/non-monotone -- name
+        # both, cheapest first
         try:
             return resid(X)
         except RuntimeError as e:
             raise RuntimeError(
                 f"{label} search: the inner SCF did not converge at search "
-                f"value {X:.6g}; the target is likely unreachable or "
-                "non-monotone in the search variable -- check the target "
-                f"value (underlying: {e})") from e
+                f"value {X:.6g} (started from {x_start:.6g}); if that step "
+                "is large, try a smaller 'newton : ... : super_deltamax' "
+                "(the bracket probes by a factor 1 + super_deltamax); "
+                "otherwise the target may be unreachable or non-monotone "
+                f"in the search variable (underlying: {e})") from e
 
     grow = 1.0 + max(abs(deltamax), 1e-3)
     f0 = rf(x_start)
@@ -473,6 +478,7 @@ def run_file(path, verbose=True):
     x_prev = None
     x_scan_prev = None          # solution of the step before x_prev, same scan
     seg_prev, M_prev, fjc_prev = None, 0, 0
+    search_carry = {}           # search tuple -> root found in a prior start
     for start_i, settings in enumerate(calculations, 1):
         kal_specs = _output_specs(settings, "kal")
         pro_specs = _output_specs(settings, "pro")
@@ -485,6 +491,14 @@ def run_file(path, verbose=True):
         x_scan_prev = None
         _, search, target = _var_roles(settings)
         super_opts = _super_options(settings) if search is not None else None
+        if search is not None and search in search_carry:
+            # continuation across starts (a theta sweep re-triggering the
+            # search each start): begin at the PREVIOUS start's root rather
+            # than the file's declared value -- the sweep analogue of the
+            # x_prev field warm start. The root is unique, so this changes
+            # only the path; a fresh bracket from the declared value costs
+            # 3-6 extra full solves per sweep step.
+            _set_search(settings, search, search_carry[search])
 
         for subl, value in enumerate(steps):
             if has_var:
@@ -581,6 +595,8 @@ def run_file(path, verbose=True):
                     raise
                 system, x = cap["sys"], cap["x"]
                 it, err = cap["it"], cap["err"]
+                _set_search(settings, search, x_root)
+                search_carry[search] = x_root
                 if verbose:
                     print(f"start {start_i}{tag}: search "
                           f"{search[1]}:{search[2]} -> {x_root:.6g} "
