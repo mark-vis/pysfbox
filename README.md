@@ -79,8 +79,29 @@ index terms) — each noted in the relevant section below.
   `... : free_energy : V`, or `var : mol-Y : mu / theta / n / phibulk : V` —
   runs an outer scalar root-find (regula falsi) that adjusts the searched
   quantity until the target observable hits its value, each step a full
-  warm-started SCF solve. (The `constraint:delta` / `Laplace_pressure`
-  membrane-balance search of the Namics examples is not supported.)
+  warm-started SCF solve. When later `start` blocks re-trigger the same
+  search (a sweep), each search begins from the previous start's found
+  root rather than the file's declared value. `var : sys-NN :
+  Laplace_pressure : 0` (with the delta constraint below) drives the
+  inside/outside pressure difference of a pinned droplet/micelle/membrane
+  to zero; `newton : ... : super_deltamax` sets the bracket probe factor
+  (1 + super_deltamax; the 0.5 default suits spherical θ~R³ searches —
+  use a small value like 0.01 when θ moves a pinned flat interface).
+- **Delta constraint** (interface pinning): `sys : NN : constraint : delta`
+  with `delta_molecules : A;B`, `delta_range : (z)` (multiple sites
+  `(z1);(z2)`; at `FJC_choices > 3` add `delta_range_units : bondlength`
+  or `gritsize`) and `phi_ratio : r` (or `critical_ratio` = sqrt(N_A/N_B))
+  pins the local composition at the listed layers: phi_A − phi_B is driven
+  to (r−1)/(r+1) by a Lagrange-multiplier field beta(z) that enters the two
+  molecules' propagators as ±beta. The classic use (cf. the Namics
+  `nucleation_barrier.in` example): pin the interface and scan `phi_ratio`
+  (or `delta_range`) over `start` blocks to push a micelle/droplet away
+  from its equilibrium size while reading `grand_potential` — the
+  free-energy landscape F(size) that equilibrium SCF alone cannot reach.
+  The beta work term is included in the free energy and grand potential
+  (F = Ω + Σnμ holds at the solver floor). Profile output
+  `pro : sys : NN : beta`; oracle-validated on a 52-start
+  micelle-compression scan (`tests/delta_micelle.in`).
 - **Electrostatics**: `mon : valence` (fixed charges, strong electrolytes),
   `mon : epsilon` (relative permittivity, default 80), `mon : e.psi0/kT`
   (fixed surface potential on a frozen electrode layer), `mol : freedom :
@@ -154,8 +175,7 @@ Full-Namics features that this release does not implement raise a clear
 `NotImplementedError` naming the feature, rather than silently producing
 wrong numbers — so an input either runs correctly or tells you exactly what
 it needs. Currently outside scope: ring and asymmetric-dendrimer
-architectures, the `constraint:delta` / `Laplace_pressure` membrane-balance
-search, initial-guess files, and mesodyn/cleng/teng calculations.
+architectures, initial-guess files, and mesodyn/cleng/teng calculations.
 
 The **one-gradient** path (planar / cylindrical / spherical, including
 `FJC_choices` refinement) covers the full feature set above. The **two- and
