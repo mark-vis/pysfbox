@@ -180,8 +180,10 @@ simply propagates finitely here.
   `no convergence in <N> iterations (max|g| = …); try a smaller deltamax`. A run
   whose restricted `theta` values exceed what the box can hold in equilibrium
   raises `converged to a state with negative solvent bulk fraction …`. In a
-  `search` (super-iteration), a failed inner solve reports that the target is
-  likely unreachable or non-monotone in the search variable.
+  `search` (super-iteration), a failed inner solve reports the probe value and
+  start, suggests a smaller `super_deltamax` when the probe step was large
+  (the bracket probes by a factor 1 + `super_deltamax`), and otherwise points
+  at an unreachable/non-monotone target.
 
 Convergence quality is also visible in the run log, which prints
 `converged in <it> iterations, max|g| = …, max|phi_T-1| = …` per calculation.
@@ -1257,7 +1259,11 @@ var : mol-pol : phibulk : 0.1
 Any other item (`lat`/`mon`/`state`/`reaction` search) or other property raises
 `NotImplementedError`. The molecule must **declare an initial value** of the
 searched quantity (the search starts from it; `theta` may be implied by
-`n × chainlength`).
+`n × chainlength`). When later `start` blocks re-trigger the same search (a
+sweep: the accumulated `var` lines stay active), each search **starts from
+the previous start's found root** rather than the declared value — the sweep
+analogue of the field warm start (the root is unique, so only the path
+changes; saves 3–6 full solves per sweep step).
 
 **Target observable:**
 
@@ -1286,7 +1292,7 @@ equilibration) or the equate-to-solvent / balance-membrane searches. A
 | param | default | meaning |
 |---|---|---|
 | `super_tolerance` | `10 × tolerance` | target-error tolerance (don't set it below the target observable's noise floor at the inner tolerance — for `Laplace_pressure` at inner 1e-7 that is ~1e-5) |
-| `super_deltamax` | `0.5` | base growth factor for the bracket expansion |
+| `super_deltamax` | `0.5` | the bracket probes the search variable by a factor **1 + super_deltamax**. The 0.5 default suits spherical θ~R³ searches (a probe moves R only ~14%); when θ translates a delta-pinned **flat** interface directly, use ~`0.01` — a ×1.5 probe rams 50% more material against the pinned wall and the inner SCF cannot follow |
 | `super_iterationlimit` | `max(iterationlimit // 10, 30)` | max super-iterations (each = one full SCF) |
 
 The outer solver is a robust **bracket-then-Illinois false position**
