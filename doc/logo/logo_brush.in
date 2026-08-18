@@ -1,0 +1,28 @@
+// PySFBox logo source calculation: the grafted brush whose converged phi(z)
+// shades the logo's lattice rows (binned to 9 rows by make_logo.py).
+// N = 100 brush, theta = 10, good solvent, 60 planar layers.
+lat : flat : n_layers : 60
+lat : flat : lattice_type : simple_cubic
+lat : flat : geometry : planar
+lat : flat : gradients : 1
+lat : flat : lowerbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : X : freedom : pinned
+mon : X : pinned_range : firstlayer
+mon : A : freedom : free
+mon : W : freedom : free
+mon : A : chi_W : 0.0
+
+mol : brush : composition : (X)1(A)99
+mol : brush : freedom : restricted
+mol : brush : theta : 10
+
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+
+newton : n : tolerance : 1e-9
+
+output : pro : append : false
+pro : mol : brush : phi

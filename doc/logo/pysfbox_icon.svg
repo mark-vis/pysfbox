@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<defs>
+<linearGradient id="mf" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#EADFF6"/>
+<stop offset="11%" stop-color="#EFE5F9"/>
+<stop offset="22%" stop-color="#E2D3F2"/>
+<stop offset="33%" stop-color="#C7AEE3"/>
+<stop offset="44%" stop-color="#AA86D3"/>
+<stop offset="56%" stop-color="#9569C7"/>
+<stop offset="67%" stop-color="#8452BE"/>
+<stop offset="78%" stop-color="#7740B7"/>
+<stop offset="89%" stop-color="#6F35B2"/>
+<stop offset="100%" stop-color="#6B2FB0"/>
+</linearGradient>
+<clipPath id="tile"><rect x="16" y="16" width="480" height="480" rx="72"/></clipPath>
+</defs>
+<g clip-path="url(#tile)">
+<rect x="16" y="16" width="480" height="480" fill="url(#mf)"/>
+<line x1="64" y1="16" x2="64" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="64" x2="496" y2="64" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="112" y1="16" x2="112" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="112" x2="496" y2="112" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="160" y1="16" x2="160" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="160" x2="496" y2="160" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="208" y1="16" x2="208" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="208" x2="496" y2="208" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="256" y1="16" x2="256" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="256" x2="496" y2="256" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="304" y1="16" x2="304" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="304" x2="496" y2="304" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="352" y1="16" x2="352" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="352" x2="496" y2="352" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="400" y1="16" x2="400" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="400" x2="496" y2="400" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="448" y1="16" x2="448" y2="496" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<line x1="16" y1="448" x2="496" y2="448" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="3"/>
+<rect x="16" y="448" width="480" height="64" fill="#3A3A3A"/>
+<path d="M 184 472 L 184 424 L 232 424 L 232 376 L 280 376 L 280 328 L 232 328 L 232 280 L 280 280 L 280 232 L 328 232 L 328 184 L 328 136" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 184 472 L 184 424 L 232 424 L 232 376 L 280 376 L 280 328 L 232 328 L 232 280 L 280 280 L 280 232 L 328 232 L 328 184 L 328 136" fill="none" stroke="#EB6834" stroke-width="11" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="184" cy="424" r="17.5" fill="#FFFFFF"/>
+<circle cx="184" cy="424" r="13.5" fill="#EB6834"/>
+<circle cx="232" cy="424" r="17.5" fill="#FFFFFF"/>
+<circle cx="232" cy="424" r="13.5" fill="#EB6834"/>
+<circle cx="232" cy="376" r="17.5" fill="#FFFFFF"/>
+<circle cx="232" cy="376" r="13.5" fill="#EB6834"/>
+<circle cx="280" cy="376" r="17.5" fill="#FFFFFF"/>
+<circle cx="280" cy="376" r="13.5" fill="#EB6834"/>
+<circle cx="280" cy="328" r="17.5" fill="#FFFFFF"/>
+<circle cx="280" cy="328" r="13.5" fill="#EB6834"/>
+<circle cx="232" cy="328" r="17.5" fill="#FFFFFF"/>
+<circle cx="232" cy="328" r="13.5" fill="#EB6834"/>
+<circle cx="232" cy="280" r="17.5" fill="#FFFFFF"/>
+<circle cx="232" cy="280" r="13.5" fill="#EB6834"/>
+<circle cx="280" cy="280" r="17.5" fill="#FFFFFF"/>
+<circle cx="280" cy="280" r="13.5" fill="#EB6834"/>
+<circle cx="280" cy="232" r="17.5" fill="#FFFFFF"/>
+<circle cx="280" cy="232" r="13.5" fill="#EB6834"/>
+<circle cx="328" cy="232" r="17.5" fill="#FFFFFF"/>
+<circle cx="328" cy="232" r="13.5" fill="#EB6834"/>
+<circle cx="328" cy="184" r="17.5" fill="#FFFFFF"/>
+<circle cx="328" cy="184" r="13.5" fill="#EB6834"/>
+<circle cx="328" cy="136" r="21" fill="#FFFFFF"/>
+<circle cx="328" cy="136" r="17" fill="#EB6834"/>
+</g>
+</svg>

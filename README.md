@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/mark-vis/pysfbox/main/doc/logo/pysfbox_wordmark.svg" width="430" alt="PySFBox"></p>
+
 # PySFBox — Scheutjens–Fleer SCF lattice theory in pure Python/NumPy
 
 [![PyPI](https://img.shields.io/pypi/v/pysfbox.svg)](https://pypi.org/project/pysfbox/)
