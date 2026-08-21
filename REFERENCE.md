@@ -1146,7 +1146,13 @@ ghost to the wall density.
   of the *excess* profile measured from the first layer, normalised by
   θ_exc: `1st_M_phi_z` is the mean position ⟨z⟩ (brush/layer height proxy),
   `2nd_M_phi_z` the mean-square position, `RMS = √M₂`, and `fluctuations` the
-  standard deviation √(⟨z²⟩ − ⟨z⟩²) (layer width).
+  standard deviation √(⟨z²⟩ − ⟨z⟩²) (layer width). All four are in bond-length
+  units and independent of lattice refinement (`FJC_choices`) — fixed
+  20 Aug 2026, when a double division by fjc made them fjc times too small on
+  refined lattices. On refined lattices the second moment (and hence RMS and
+  fluctuations) **intentionally deviates** from the compiled Namics, whose
+  refined 2nd moment misses a ×fjc compensation; the first moment and all
+  fjc = 1 values agree with the binary.
 
 ---
 

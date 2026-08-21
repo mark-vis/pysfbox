@@ -214,8 +214,14 @@ class Lattice1D:
         return float(np.dot(X[self.iv], self.L[self.iv]))
 
     def moment(self, X, Xb, n):
-        # Namics PutM divides the summed moment by fjc so refined-lattice
-        # (fjc>1) moments come out in physical-layer units (factor 1 at
-        # fjc=1). Found in the 5 Jul 2026 physics review.
+        # z_phys is in bond units and L is the physical layer volume, so
+        # this sum IS the physical moment, fjc-independent under
+        # refinement. Do NOT divide by fjc again: Namics' LGrad1::Moment
+        # does, but its 1st_M_phi_z caller multiplies back
+        # (segment.cpp:1837) while its 2nd-moment caller does not, so the
+        # binary's refined 2nd moments are fjc too small and no oracle
+        # here. The 5 Jul 2026 physics review copied the inner /fjc
+        # without the caller's *fjc; both dropped 20 Aug 2026
+        # (collaborator bug report). Bit-identical at fjc=1.
         return float(np.dot(self.z_phys**n, (X[self.iv] - Xb)
-                            * self.L[self.iv])) / self.fjc
+                            * self.L[self.iv]))
