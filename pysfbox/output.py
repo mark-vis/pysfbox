@@ -4,9 +4,10 @@ Formats follow Namics output.cpp / LGrad1::PutProfiles:
 - .kal: one file per input (basename.kal), tab-separated; header line of
   `key:name:prop` labels written when the file is created; one row per
   calculation / var step; reals as %.16e, ints as %i, unknown as NiN.
-- .pro: header `x` + `key:name:prop` labels; rows: coordinate (z - 0.5) as
-  %e, profile values as %.20g; one file per profile dump, numbered
-  basename.pro / basename_<j>.pro / basename_<start>_<j>.pro.
+- .pro: header `x` + `key:name:prop` labels; rows: physical coordinate
+  (offset_first_layer + z - 0.5, like Namics) as %e, profile values as
+  %.20g; one file per profile dump, numbered basename.pro /
+  basename_<j>.pro / basename_<start>_<j>.pro.
 """
 
 import os
@@ -51,7 +52,8 @@ def write_pro(path, specs, system, write_bounds=False):
     """specs: list of (key, name, prop). Writes the interior layers; with
     write_bounds (Namics `output : pro : write_bounds : true`) also writes the
     fjc ghost layers on each side (Namics LGrad1::PutProfiles: `a = 0` if
-    writebounds else `fjc`, rows x = a .. M-a, coord = (x-fjc+0.5)/fjc). Ghost
+    writebounds else `fjc`, rows x = a .. M-a, coord = offset +
+    (x-fjc+0.5)/fjc). Ghost
     values are filled per the boundary condition (System.fill_profile_bounds),
     so they match Namics rather than the zeroed stored ghosts."""
     lat = system.lat
@@ -73,7 +75,11 @@ def write_pro(path, specs, system, write_bounds=False):
     with open(path, "w") as fp:
         fp.write("x\t" + "\t".join(labels) + "\n")
         for x in range(a, lat.M - a):         # refined site index
-            coord = (x - lat.fjc + 0.5) / lat.fjc   # == z_phys[k] on interior
+            # physical coordinate incl. the radial domain offset (Namics
+            # LGrad1.cpp:243 prints offset + (k-0.5)/fjc; 0 for planar and
+            # unset offsets, so this only shows on offset curved lattices
+            # -- and matches the N-D writer's offset-inclusive radial axis)
+            coord = lat.offset + (x - lat.fjc + 0.5) / lat.fjc
             row = [f"{coord:e}"] + [f"{c[x]:.20g}" for c in cols]
             fp.write("\t".join(row) + "\n")
 
@@ -81,8 +87,8 @@ def write_pro(path, specs, system, write_bounds=False):
 def _write_pro_nd(path, lat, cols, labels):
     """2D/3D .pro: leading cell-centre coordinate columns (x, y[, z]) then the
     profile values, one row per interior cell in C order. Cartesian/radial
-    coordinates are in bond lengths (like the 1-gradient z-0.5); angular axes
-    (theta, phi) are in radians."""
+    coordinates are in bond lengths, radial ones offset-inclusive (like the
+    1-gradient offset + z-0.5); angular axes (theta, phi) are in radians."""
     names = ["x", "y", "z"][:lat.gradients]
     interior = tuple(slice(1, n + 1) for n in lat.dims)
     coord_cols = []

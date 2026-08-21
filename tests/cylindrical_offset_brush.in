@@ -1,0 +1,50 @@
+// offset_first_layer regression (ref 21 Aug 2026) -- the FIRST committed
+// input exercising a radial domain offset: a brush grafted onto a
+// cylindrical fibre of core radius 3 (the offset models the hard core;
+// layer 1 spans r = 3..4), fjc = 1. Committed together with the
+// offset-inclusive .pro coordinate column (the x column is the PHYSICAL
+// radius offset + z - 0.5 = 3.5, 4.5, ..., matching Namics
+// LGrad1.cpp:243 and PySFBox's own N-D radial axes; before 21 Aug 2026
+// the 1-gradient writer omitted the offset). ORACLE-VALIDATED at
+// creation against ../Namics/bin/namics on this input: kal
+// theta/theta_exc/1st_M/F/GP at the convergence floor and the .pro
+// byte-level convention match (coordinate column identical, profiles at
+// the floor) -- at fjc = 1 the offset is handled consistently by both
+// engines (the offset+fjc>1 combination is where they diverge: Namics
+// places refined shells at fjc x the declared offset, reported
+// upstream; see tests/manual/curved_fjc_excess.py for PySFBox's own
+// offset+fjc consistency guards). Also guards the initial_guess:file
+// offset round-trip (tests/manual/guess_file_guards.py seeds from this
+// class of .pro).
+lat : NN : n_layers : 30
+lat : NN : geometry : cylindrical
+lat : NN : lattice_type : simple_cubic
+lat : NN : offset_first_layer : 3
+
+mon : P : freedom : pinned
+mon : P : pinned_range : 1;1
+mon : A : freedom : free
+mon : A : chi_W : 0.4
+mon : W : freedom : free
+
+mol : pol : composition : (P)1(A)29
+mol : pol : freedom : restricted
+mol : pol : theta : 60
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : NN : tolerance : 1e-8
+
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : theta_exc
+kal : mon : A : 1st_M_phi_z
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+
+output : pro : append : false
+pro : mon : A : phi
+pro : mol : pol : phi
+
+start

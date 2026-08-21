@@ -1022,7 +1022,7 @@ pro : sys : NN : psi
 | file | header | value format | coordinate |
 |---|---|---|---|
 | `.kal` | tab-joined `key:name:prop` labels, once | ints `%d`, reals `%.16e`, unknown `NiN` | — |
-| `.pro` (1-gradient) | `x` + tab-joined labels | reals `%.20g` | leading `x` column = cell-centre position `(x − fjc + 0.5)/fjc` in bond lengths (i.e. `z − 0.5` at `fjc = 1`); coord `%e` |
+| `.pro` (1-gradient) | `x` + tab-joined labels | reals `%.20g` | leading `x` column = physical cell-centre position `offset_first_layer + (x − fjc + 0.5)/fjc` in bond lengths (i.e. `z − 0.5` at `fjc = 1`, shifted by the radial offset when one is set — like Namics; since 21 Aug 2026); coord `%e` |
 | `.pro` (2D/3D) | `x y[ z]` + labels | reals `%.20g` | one leading column per gradient (Cartesian/radial in bond lengths); one row per interior cell in C order; coord `%e` |
 
 `.kal` semantics: the file is created fresh (overwrite) on the first
