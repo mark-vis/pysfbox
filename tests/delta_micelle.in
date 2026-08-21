@@ -17,6 +17,16 @@
 // raises). Internal anchors: phiA-phiB = R at the mask to the solver floor;
 // Legendre F = GP + sum n*mu to 3e-8 with the beta work terms in F and GP.
 // 'thetaexc' is a Namics-accepted alias of theta_exc (oracle-checked).
+// SINCE 21 Aug 2026 the theta_exc/thetaexc columns INTENTIONALLY deviate
+// from that oracle agreement by phibulk*(L_sum - volume) = 1.069 here
+// (1.5e-3 relative, constant across rows): excess bookkeeping now
+// subtracts phibulk in the lattice's OWN measure sum(L), which on curved
+// fjc>1 lattices differs from the geometric volume by a surface term of
+// the smeared refined shells. The old 1.1e-7 agreement on theta_exc was
+// bug-compatible measure-mixing (a uniform bulk had NONZERO "excess" in
+// both engines; reported upstream); every other column is untouched.
+// The exposed-class regression with self-validation is
+// tests/spherical_fjc_excess.in.
 // Laplace_pressure (= -grand_potential_density[fjc]) matches the oracle
 // at the floor since grand_potential_density adopted Namics' SYMMETRIC
 // per-site chi booking (21 Jul 2026; the one-sided booking deviated

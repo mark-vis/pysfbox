@@ -78,6 +78,9 @@ class Lattice1D:
         self.l0 = 1.0 - self.l1 - self.l_1
         self.volume = (self.L[self.iv].sum() if geometry != "planar"
                        else float(self.MX))
+        # at fjc = 1 the layers partition the domain exactly, so the
+        # lattice's own measure sum(L) IS the geometric volume
+        self.L_sum = self.volume
 
     # ---- fjc > 1: refined (2*fjc+1)-point lattice (Namics ComputeLambdas) ---
     def _setup_fjc(self, geometry):
@@ -126,15 +129,29 @@ class Lattice1D:
                                   c_mid, VL, area)
             LAM[fjc, i] += 1.0 - LAM[:, i].sum()         # centre closes the row
         self.L, self.LAM = L, LAM
-        # geometric volume in closed form (Namics LGrad1.cpp:184-185); this
-        # equals sum(L[iv]) at fjc=1 but the interior L-sum over-counts the
-        # true volume for fjc>1 (boundary half-cells). Found 5 Jul 2026.
-        off = self.offset
+        # geometric volume in closed form. The offset enters in PHYSICAL
+        # bond units, matching the shell placement r = off + k/fjc above
+        # (Namics LGrad1.cpp:184 looks like ((MX+off)^3-off^3)/fjc^3 but
+        # its variable is pre-multiplied by fjc at lattice.cpp:387; a
+        # line-copy without that pre-multiply put the offset in refined
+        # units here until 21 Aug 2026).
+        off = self.offset * fjc
         if geometry == "spherical":
             self.volume = 4.0 / 3.0 * np.pi * ((MX + off) ** 3 - off ** 3) \
                 / fjc ** 3
         else:                                            # cylindrical
             self.volume = np.pi * ((MX + off) ** 2 - off ** 2) / fjc ** 2
+        # The lattice's own measure sum(L[iv]) EXCEEDS the geometric
+        # volume: the refined "shells" above are bond-thick smears (each
+        # a [r-1/2, r+1/2] window /fjc), whose sum carries a surface
+        # overhang ~ 2*pi*R^2/fjc (sphere; relative 3/(2*R*fjc)). Excess
+        # bookkeeping (theta_exc = theta - phibulk*measure) must use THIS
+        # measure, so a uniform bulk phi = phibulk has exactly zero
+        # excess site-wise; subtracting the geometric volume instead
+        # pollutes every excess/moment column by phibulk*(L_sum - volume)
+        # — which is what Namics does (its theta_exc mixes the measures
+        # the same way; intentional deviation, reported upstream).
+        self.L_sum = float(L[self.iv].sum())
 
     @staticmethod
     def _reflect(LAM, c, i, r, rhigh, edge, fjc, coef, VL, area):

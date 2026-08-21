@@ -712,4 +712,9 @@ class Molecule:
         return self.lat.weighted_sum(self.phi)
 
     def get_theta_exc(self):
-        return self.get_theta() - self.lat.volume * self.phibulk
+        # phibulk is subtracted in the lattice's OWN measure (sum L), so a
+        # uniform bulk has exactly zero excess; on curved fjc>1 lattices
+        # L_sum != volume (smeared refined shells) and Namics' geometric-
+        # volume subtraction pollutes the excess by phibulk*(L_sum-volume)
+        # — intentional deviation, reported upstream.
+        return self.get_theta() - self.lat.L_sum * self.phibulk

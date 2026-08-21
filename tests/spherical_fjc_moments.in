@@ -13,9 +13,11 @@
 // -- with a nonzero phibulk on a CURVED fjc>1 lattice, theta_exc
 // subtracts phibulk*volume with the geometric volume (4 pi R^3/3) while
 // theta integrates the refined shells (sum L differs by ~3% at fjc = 2),
-// and that measure mismatch pollutes the excess columns in BOTH engines
-// (Namics does the same; open issue, under investigation in the dev
-// tree). SELF-VALIDATING at creation: all four kal columns ==
+// and that measure mismatch polluted the excess columns in BOTH engines
+// -- FIXED 21 Aug 2026: theta_exc now subtracts phibulk in the
+// lattice's OWN measure sum(L) (see tests/spherical_fjc_excess.in for
+// the exposed class; Namics still mixes the measures, reported
+// upstream). SELF-VALIDATING at creation: all four kal columns ==
 // sum(z^n phi L)/theta recomputed from the committed .pro at machine
 // precision, and fjc-CONSISTENT (<z> = 6.176/5.806/5.742 at fjc 1/2/3,
 // converging under refinement, where the bug gave exactly <z>/fjc).

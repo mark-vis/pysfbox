@@ -214,7 +214,7 @@ lat : L : n_layers : 100
 | `lambda` | real in (0, ½) | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). 1-gradient only. |
 | `n_layers` | integer | *(required, 1D)* | number of physical layers z = 1..n_layers (see FJC refinement). Missing raises. |
 | `FJC_choices` | `3`, `5`, `7`, … | `3` | lattice refinement (freely-jointed-chain sub-layers). `3` = unrefined (fjc = 1). |
-| `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries). |
+| `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. |
 | `bondlength` | float in 1e-12..1e-8 (m) | `5e-10` | segment bond length; **only consumed by charged systems** (Poisson prefactor). Out-of-range raises. |
 | `Markov` | `1` | `1` | chain statistics: `1` = fully flexible. |
 
@@ -1071,7 +1071,7 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 | `state` | `alphabulk` | real | bulk fraction of this internal state |
 | `state` | `valence` | real | state valence (charge) |
 | `mol` | `theta` | real | total amount Σ L·φ of the molecule |
-| `mol` | `theta_exc` | real | excess amount θ − V·φ_bulk |
+| `mol` | `theta_exc` | real | excess amount θ − (Σ L)·φ_bulk |
 | `mol` | `phibulk` | real | bulk volume fraction |
 | `mol` | `Mu`, `MU`, `mu` | real | chemical potential μ |
 | `mol` | `mu-<state>` | real | per-state μ = μ + ln(α_bulk,state), for chain-length-1 molecules only |
@@ -1082,7 +1082,7 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 | `mol` | `phiMin` | real | min φ over interior layers |
 | `mol` | `phiM` | real | φ at the last interior layer (the bulk/reservoir side) — the Namics `phiM`, **not** the maximum |
 | `mon` | `theta` | real | total amount of this monomer |
-| `mon` | `theta_exc` | real | excess amount θ − V·φ_bulk |
+| `mon` | `theta_exc` | real | excess amount θ − (Σ L)·φ_bulk |
 | `mon` | `phibulk` | real | bulk volume fraction of the monomer |
 | `mon` | `chi_<X>`, `chi-<X>` | real | Flory χ between this monomer and monomer `X` |
 | `mon` | `1st_M_phi_z` | real | first moment ⟨z⟩ of the excess profile (M₁/θ_exc) |
@@ -1124,8 +1124,17 @@ ghost to the wall density.
 
 - **theta (θ)** — total amount of a species, Σ over layers of site-volume ×
   volume fraction (`Σ L·φ`). For a grafted layer θ = σ·N per unit area.
-- **theta_exc** — the *excess* over the bulk reservoir, θ − V·φ_bulk; the
-  adsorbed/depleted amount. It is what the moments normalise by.
+- **theta_exc** — the *excess* over the bulk reservoir; the
+  adsorbed/depleted amount, and what the moments normalise by. Since
+  21 Aug 2026 the bulk is subtracted in the lattice's own measure,
+  θ − (Σ L)·φ_bulk, so a uniform bulk has exactly zero excess. On planar
+  and fjc = 1 lattices Σ L equals the geometric volume V and nothing
+  changed; on **curved lattices with `FJC_choices` > 3** the refined
+  shells over-count V by a surface term (≈ 3/(2·R·fjc) relative), and
+  there theta_exc *intentionally deviates* from the compiled Namics by
+  φ_bulk·(Σ L − V) — Namics subtracts the geometric volume from the
+  Σ L-based θ, so its "excess" of a uniform bulk is nonzero (reported
+  upstream; regression `tests/spherical_fjc_excess.in`).
 - **phibulk (φ_bulk)** — the volume fraction far from any surface (the
   reservoir composition); 0 for a strictly grafted/pinned molecule.
 - **GN** — the single-chain partition function in the converged field;
@@ -1152,7 +1161,11 @@ ghost to the wall density.
   refined lattices. On refined lattices the second moment (and hence RMS and
   fluctuations) **intentionally deviates** from the compiled Namics, whose
   refined 2nd moment misses a ×fjc compensation; the first moment and all
-  fjc = 1 values agree with the binary.
+  fjc = 1 values agree with the binary. On **curved** fjc>1 lattices with
+  a nonzero φ_bulk the normalising θ_exc additionally uses the
+  measure-consistent subtraction since 21 Aug 2026 (see theta_exc above),
+  so all four columns deviate from Namics there — its 1st_M on such
+  cases divides an honest numerator by the polluted excess.
 
 ---
 

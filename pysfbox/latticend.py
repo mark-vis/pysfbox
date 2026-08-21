@@ -165,6 +165,7 @@ class LatticeND:
         C = self.C
         self.L = L.ravel()
         self.volume = float(L[self.iv].sum())
+        self.L_sum = self.volume     # finite-volume cells partition exactly
         L_safe = np.where(L > 0, L, 1.0)
         self._lam_p = []
         self._lam_m = []

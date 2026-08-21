@@ -1238,7 +1238,7 @@ class System:
                             return "real", lat.weighted_sum(st.phi)
                         if prop == "theta_exc":
                             return "real", (lat.weighted_sum(st.phi)
-                                            - lat.volume * st.phibulk)
+                                            - lat.L_sum * st.phibulk)
         if key == "mol" and name in self.molecules:
             m = self.molecules[name]
             # per-state chemical potential mu-STATE = Mu + ln(alphabulk_s)
@@ -1289,7 +1289,7 @@ class System:
                     return "real", lat.weighted_sum(st.phi)
                 if prop == f"theta_exc_{st.name}":
                     return "real", (lat.weighted_sum(st.phi)
-                                    - lat.volume * st.phibulk)
+                                    - lat.L_sum * st.phibulk)
                 # system-average state fraction alpha-STATE = theta_state/theta_mon
                 # (Namics 'mon : X : alpha-S': the mean degree of that state
                 # over the segment, e.g. the average degree of dissociation)
@@ -1303,7 +1303,9 @@ class System:
                 return "real", s.chi_with(self.segments[pk[4:]])
             phib = self.phibulk_seg.get(name, 0.0)
             theta = lat.weighted_sum(s.phi)
-            theta_exc = theta - lat.volume * phib
+            # excess in the lattice's own measure (L_sum == volume except
+            # curved fjc>1; see lattice.py) so uniform bulk => exactly 0
+            theta_exc = theta - lat.L_sum * phib
             if prop == "theta":
                 return "real", theta
             if prop == "theta_exc":

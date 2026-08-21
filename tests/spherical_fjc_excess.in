@@ -1,0 +1,59 @@
+// Curved fjc>1 EXCESS-COLUMN regression (ref 21 Aug 2026, the
+// measure-consistency fix): theta_exc + the four moment columns for
+// adsorption FROM SOLUTION (phibulk != 0) on a spherical FJC_choices 5
+// (fjc = 2) lattice -- the class every earlier curved-fjc test was
+// structurally blind to (all were pinned/grafted, phibulk = 0, or had no
+// excess columns). Guards the 21 Aug 2026 fix: theta_exc subtracts
+// phibulk in the lattice's OWN measure L_sum = sum(L[iv]), not the
+// geometric closed-form volume. On curved fjc>1 lattices the refined
+// shells are bond-thick smears whose sum EXCEEDS the geometric volume by
+// a surface term (~2 pi R^2/fjc; here L_sum = 67452.6 vs V = 65449.8,
+// 3.06%), and the old geometric-volume subtraction polluted every excess
+// and moment column by phibulk*(L_sum - V) = 40.1 of the reported 53.3
+// -- the "mean position" 1.31 sat physically inside the frozen core
+// (radius 3). SELF-VALIDATING at creation: kal theta_exc ==
+// sum((phi-phibulk)*L) and the moments == their L-measure integrals from
+// the committed .pro at machine precision; a UNIFORM bulk now has
+// exactly ZERO excess (tests/manual/curved_fjc_excess.py); theta_exc and
+// <z> are fjc-CONSISTENT (theta_exc 11.99/13.24, <z> 5.57/5.26 at
+// fjc 1/2, converging on the physical-shell values 12.18/5.20).
+// INTENTIONALLY DEVIATES from the compiled Namics, which mixes the
+// measures the same old way (oracle on this input: theta_exc 53.2975,
+// 1st_M 1.3076 -- matching the polluted values to 3e-9 was
+// bug-compatibility, namics_bugs_overview #29; its 2nd_M additionally
+// misses the *fjc compensation, #28). fjc = 1 and planar and all
+// phibulk = 0 cases are bit-identical to before the fix. Full diagnosis:
+// doc/fjc_offset_volume_notes.md.
+lat : NN : n_layers : 25
+lat : NN : geometry : spherical
+lat : NN : lattice_type : hexagonal
+lat : NN : FJC_choices : 5
+
+mon : S : freedom : frozen
+mon : S : frozen_range : 1;3
+mon : A : freedom : free
+mon : A : chi_S : -1.5
+mon : A : chi_W : 0.4
+mon : W : freedom : free
+
+mol : pol : composition : (A)25
+mol : pol : freedom : free
+mol : pol : phibulk : 0.02
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : NN : tolerance : 1e-8
+
+output : kal : append : false
+kal : mon : A : theta_exc
+kal : mon : A : 1st_M_phi_z
+kal : mon : A : 2nd_M_phi_z
+kal : mon : A : RMS
+kal : mon : A : fluctuations
+kal : mol : pol : theta_exc
+
+output : pro : append : false
+pro : mon : A : phi
+
+start
