@@ -112,10 +112,17 @@ class Lattice1D:
             # outermost channels (bond endpoints)
             if 2 * rlow - r > 0:
                 LAM[0, i] += c_ext * area(rlow) / VL
-            if 2 * rhigh - r < edge:
+            # the outer mirror sits at r = off + edge: the offset must enter
+            # both the test and the reflected distance (before 25 Sep 2026
+            # the outermost channel tested against `edge` alone, so any
+            # offset_first_layer > 0 with FJC_choices > 3 reflected that
+            # channel onto itself at EVERY site -- weights 1/8,1/4,3/8,1/4,0
+            # instead of 1/8,1/4,1/4,1/4,1/8; offset 0 was never affected)
+            if 2 * rhigh - r < off + edge:
                 LAM[FJC - 1, i] += c_ext * area(rhigh) / VL
             else:                          # reflect off the outer mirror
-                self._reflect(LAM, FJC - 1, i, r, rhigh, edge, fjc, c_ext, VL, area)
+                self._reflect(LAM, FJC - 1, i, r, rhigh, off + edge, fjc,
+                              c_ext, VL, area)
             # inner channels
             for j in range(1, fjc):
                 rlow += 0.5 / fjc
@@ -125,8 +132,8 @@ class Lattice1D:
                 if 2 * rhigh - r < off + edge:
                     LAM[FJC - 1 - j, i] += c_mid * area(rhigh) / VL
                 else:
-                    self._reflect(LAM, FJC - 1 - j, i, r, rhigh, edge, fjc,
-                                  c_mid, VL, area)
+                    self._reflect(LAM, FJC - 1 - j, i, r, rhigh, off + edge,
+                                  fjc, c_mid, VL, area)
             LAM[fjc, i] += 1.0 - LAM[:, i].sum()         # centre closes the row
         self.L, self.LAM = L, LAM
         # geometric volume in closed form. The offset enters in PHYSICAL

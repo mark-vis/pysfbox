@@ -1,0 +1,47 @@
+// REFINED CURVED LATTICE WITH AN OFFSET (25 Sep 2026, bug #32): the
+// planar_fjc_adsorption problem on a spherical shell of inner radius
+// 100000 b (offset_first_layer 1e5, FJC_choices 5, adsorbing solid inner
+// wall). At this radius the shell is planar to first order in 1/R: per unit
+// wall area 4 pi R^2 the kal equals planar_fjc_adsorption.kal up to the
+// shell-volume factor 1 + 40/R on the bulk part (theta/4piR^2 = 0.93267 vs
+// planar 0.93235, i.e. 0.8 bulk x 4e-4; verified at creation, 22 iterations
+// on both). Before the fix the outermost outward channel was reflected at
+// EVERY site whenever offset > 0 (weights 1/8,1/4,3/8,1/4,0 instead of
+// 1/8,1/4,1/4,1/4,1/8: `2*rhigh - r < edge` without the offset in
+// PySFBox _setup_fjc, a faithful port of Namics LGrad1.cpp:82), which gave
+// theta/4piR^2 = 1.0717 here, 15 % off, and no convergence to the planar
+// lattice at any R. INTENTIONALLY deviates from the compiled Namics (same
+// bug there, LGrad1.cpp:82).
+lat : NN : n_layers : 40
+lat : NN : geometry : spherical
+lat : NN : offset_first_layer : 100000
+lat : NN : lattice_type : hexagonal
+lat : NN : FJC_choices : 5
+lat : NN : lowerbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : A : freedom : free
+mon : A : chi_S : -1.5
+mon : A : chi_W : 0.4
+mon : W : freedom : free
+
+mol : pol : composition : (A)25
+mol : pol : freedom : free
+mol : pol : phibulk : 0.02
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : NN : tolerance : 1e-8
+
+output : kal : append : false
+kal : mol : pol : theta
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+
+output : pro : append : false
+pro : mol : pol : phi
+pro : mon : A : phi
+
+start
