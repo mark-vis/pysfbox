@@ -4,7 +4,8 @@ import os
 
 import numpy as np
 
-from .inputreader import (get_blocks, last, read_input, set_value)
+from .inputreader import (_copy, _suggest, get_blocks, last, read_input,
+                          set_value)
 from .output import kal_path, pro_path, write_kal, write_pro
 from .system import System
 
@@ -125,6 +126,17 @@ def _var_roles(settings):
                                  "(Namics allows one)")
             search = (item, obj, last(params, "search").strip())
         cands = _SYS_TARGETS if item == "sys" else _MOL_TARGETS
+        live = [prop for prop in cands if prop in params]
+        if len(live) > 1:
+            # settings accumulate across starts: a later start that names
+            # a second target in the same block used to keep the FIRST in
+            # this tuple order, silently (review 6 Oct 2026, #53; Namics
+            # allows one target)
+            raise ValueError(
+                f"var : {name} carries {len(live)} targets ("
+                + ", ".join(f"{p} : {last(params, p)}" for p in live)
+                + "); a block can drive only one (settings accumulate, so "
+                "a target set in an earlier start stays active)")
         for prop in cands:
             if prop in params:
                 if target is not None:
@@ -217,42 +229,156 @@ def _chi_partner_params(settings, key, name, prop):
     return out
 
 
+def _mol_length(settings, name):
+    """Segment count N of molecule `name` -- the factor Molecule uses to
+    link n and theta (theta = n*N, model.py). Read off a throw-away System
+    built from a copy of the settings, so it is exactly the Molecule's own
+    value (also for branched compositions). None when the molecule cannot
+    be built here."""
+    try:
+        return float(System(_copy(settings)).molecules[name].N)
+    except Exception:
+        return None
+
+
 def _set_scan_value(settings, key, name, prop, v):
-    """Write one scan value into the settings. A chi is SYMMETRIC: when the
-    partner block also carries the pair (`mon : W : chi_A` while scanning
-    `mon-A : chi_W`), its entry is written too, so every step builds a
-    symmetric table (review 6 Oct 2026, #7; System refuses a conflicting
-    pair)."""
+    """Write one scan value into the settings. A molecule's theta and n are
+    LINKED (theta = n*N, cf. Namics Molecule::UpdateVarInfo), and Molecule
+    takes theta over n when both are present -- so a scan of n on a
+    molecule that declares theta (or inherited it from an earlier start)
+    used to rewrite n while the declared theta held every row at the same
+    state (review 6 Oct 2026, #24). Setting one now clears the other, like
+    _set_search. A chi is SYMMETRIC: when the partner block also carries
+    the pair (`mon : W : chi_A` while scanning `mon-A : chi_W`), its entry
+    is written too, so every step builds a symmetric table (#7; System
+    refuses a conflicting pair)."""
+    if key == "mol" and prop in ("theta", "n"):
+        molp = settings.get(("mol", name), {})
+        molp.pop("theta", None)
+        molp.pop("n", None)
     for p, pp in _chi_partner_params(settings, key, name, prop):
         pp[p] = [str(v)]
     set_value(settings, key, name, prop, v)
 
 
+# the parameters this package reads per keyword -- a var scan of anything
+# else would change nothing (review 6 Oct 2026, #45). chi_X is checked
+# separately (its partner must be a declared mon or state).
+_SCAN_PARAMS = {
+    "lat": {"gradients", "FJC_choices", "n_layers", "geometry",
+            "lattice_type", "lowerbound", "upperbound",
+            "offset_first_layer", "lambda", "bondlength",
+            "n_layers_x", "n_layers_y", "n_layers_z",
+            "lowerbound_x", "lowerbound_y", "lowerbound_z",
+            "upperbound_x", "upperbound_y", "upperbound_z"},
+    "mon": {"freedom", "valence", "epsilon", "e.psi0/kT", "frozen_range",
+            "pinned_range"},
+    "mol": {"composition", "freedom", "phibulk", "n", "theta"},
+    "sys": {"constraint", "delta_range", "delta_range_units",
+            "delta_molecules", "phi_ratio", "initial_guess"},
+    "state": {"mon", "valence", "alphabulk"},
+    "reaction": {"equation", "pK"},
+}
+
+
+def _resolve_scan_param(settings, key, name, prop):
+    """Validate a var scan's target before anything runs and return the
+    parameter spelling to write. `set_value` creates whatever it is given,
+    so a typo used to scan a phantom object or a parameter nobody reads:
+    a plausible table with constant physics (review 6 Oct 2026, #45).
+    Checks: the object is declared, the parameter is one the package
+    consumes, and a chi partner is a declared mon/state. A chi spelled
+    differently from its declaration (`chi_W` vs `chi - W`, documented as
+    equivalent) resolves to the DECLARED spelling, so the scan starts from
+    the declared value and overwrites that entry."""
+    declared = [n for (k, n) in settings if k == key]
+    if (key, name) not in settings:
+        if key in ("lat", "sys") and not declared:
+            pass                     # no block yet: the scan creates it
+        else:
+            raise ValueError(
+                f"var : {key}-{name} : scan : {prop}: there is no "
+                f"'{key} : {name}' in the input{_suggest(name, declared)} "
+                f"-- the scan would vary a phantom object and print "
+                f"constant physics")
+    pk = prop.replace(" ", "")
+    if key in ("mon", "state") and pk.startswith(("chi_", "chi-")):
+        partner = pk[4:]
+        species = {n for (k, n) in settings if k in ("mon", "state")}
+        if partner not in species:
+            raise ValueError(
+                f"var : {key}-{name} : scan : {prop}: '{partner}' is not a "
+                f"declared mon or state{_suggest(partner, species)} -- the "
+                f"scanned interaction would never be read")
+        for p in settings.get((key, name), {}):
+            if p.replace(" ", "") in (f"chi_{partner}", f"chi-{partner}"):
+                return p             # the declared spelling
+        return prop
+    known = _SCAN_PARAMS.get(key)
+    if known is not None and prop not in known:
+        raise ValueError(
+            f"var : {key}-{name} : scan : {prop}: '{prop}' is not a "
+            f"parameter PySFBox reads under '{key}'"
+            f"{_suggest(prop, known)} -- the scan would change nothing")
+    return prop
+
+
 def _var_plan(settings):
     """The scan schedule, if a `var` scan block is present:
-    (key, name, prop, values). Ignores search/target blocks."""
+    (key, name, prop, values). Ignores search/target blocks. Validates the
+    block first (object, parameter, scale, step) and raises with an
+    actionable message: a mistyped scan must not run."""
     scan, _, _ = _var_roles(settings)
     if scan is None:
         return None
     blockname, params = scan
     key, _, name = blockname.partition("-")
     key, name = key.strip(), name.strip()   # Namics writes 'lat- flat'
-    prop = last(params, "scan")
+    prop = last(params, "scan").strip()
+    where = f"var : {key}-{name}"
+    scale = last(params, "scale", "linear").strip().lower()
+    if scale not in ("linear", "exponential"):
+        raise ValueError(
+            f"{where} : scale : {last(params, 'scale')}: the scale must be "
+            "'linear' or 'exponential' (as in Namics)")
+    if "end_value" not in params:
+        raise ValueError(f"{where} : scan : {prop} needs an 'end_value'")
     end = float(last(params, "end_value"))
     if key == "alias":
+        if ("alias", name) not in settings:
+            raise ValueError(f"{where}: there is no 'alias : {name}' in "
+                             "the input")
         cur = float(last(settings[("alias", name)], "value"))
     elif prop.endswith("-value"):
+        if ("alias", prop[:-6]) not in settings:
+            raise ValueError(f"{where} : scan : {prop}: there is no "
+                             f"'alias : {prop[:-6]}' in the input")
         cur = float(last(settings[("alias", prop[:-6])], "value"))
         key, name, prop = "alias", prop[:-6], "value"
     else:
-        cur = last(settings.get((key, name), {}), prop)
+        prop = _resolve_scan_param(settings, key, name, prop)
+        block = settings.get((key, name), {})
+        cur = last(block, prop)
+        if cur is None and key == "mol" and prop in ("theta", "n"):
+            # theta and n are linked: start from the declared OTHER one,
+            # converted (Namics PutVarInfo starts from the current amount)
+            other = last(block, "n" if prop == "theta" else "theta")
+            N = _mol_length(settings, name) if other is not None else None
+            if other is not None and N:
+                cur = (float(other) * N if prop == "theta"
+                       else float(other) / N)
+            elif other is not None:
+                raise ValueError(
+                    f"{where} : scan : {prop}: mol '{name}' declares the "
+                    f"linked quantity instead; declare '{prop}' explicitly "
+                    "(its chain length could not be determined)")
         if cur is None:
             # a chi given on the PARTNER's block is this pair's value too
             # (the table is symmetric): start the scan there, not at 0
-            cur = next((last(pp, p) for p, pp in _chi_partner_params(
-                settings, key, name, prop)), 0)
-        cur = float(cur)
-    if last(params, "scale", "").strip().lower() == "exponential":
+            cur = next((last(pp, q) for q, pp in _chi_partner_params(
+                settings, key, name, prop)), None)
+        cur = float(cur if cur is not None else 0)
+    if scale == "exponential":
         # Namics exponential scans (e.g. state alphabulk titrations,
         # state.cpp:268-304): 'steps' means steps PER DECADE, and the
         # values interpolate log10 -- verified against the oracle
@@ -261,12 +387,18 @@ def _var_plan(settings):
             raise ValueError("var : scale : exponential needs positive "
                              "start and end values")
         per_decade = float(last(params, "steps", 1))
+        if per_decade <= 0:
+            raise ValueError(f"{where} : steps must be > 0 (steps per "
+                             "decade of an exponential scan)")
         decades = abs(np.log10(end / cur))
         n = max(int(round(per_decade * decades)), 1)
         values = [cur * 10.0 ** (i * np.log10(end / cur) / n)
                   for i in range(n + 1)]
     else:
         step = float(last(params, "step", 1))
+        if step == 0:
+            raise ValueError(f"{where} : step : 0 -- a linear scan needs a "
+                             "nonzero step (its sign sets the direction)")
         n_steps = int(round((end - cur) / step)) + 1
         values = [cur + i * step for i in range(max(n_steps, 1))]
     return key, name, prop, values
@@ -457,6 +589,9 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
             "target value")
 
     a, fa, b, fb = bracket
+    ra, rb = fa, fb                 # the MEASURED errors at a and b (the
+    #                                 Illinois weighting rescales fa only)
+    f_best = min(abs(f0), abs(fa), abs(fb))
     while it < itlimit:
         c = b - fb * (b - a) / (fb - fa)          # false-position step
         fc = rf(c)
@@ -464,13 +599,45 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
         if verbose and (it <= 5 or it % 5 == 0):
             print(f"    {label} super-it {it}: search = {c:.6g}, "
                   f"target error = {fc:.3e}")
-        if abs(fc) <= tol or abs(b - a) <= 1e-13 * abs(c):
+        if abs(fc) <= tol:
             return c, it
+        if abs(b - a) <= 1e-13 * abs(c):
+            # the bracket collapsed to round-off width with the error
+            # still above tolerance: there is no root to machine precision
+            # here. Accepting c (the pre-review behaviour) wrote a state
+            # with an O(1) target error as the search result (review
+            # 6 Oct 2026, #41). Two causes: a noise-limited readout (the
+            # error HAS shrunk by orders, it just scatters above
+            # super_tolerance), or a JUMP in the target across the bracket
+            # (a branch switch: spinodal, evaporation, a droplet changing
+            # shape) -- never paper over the latter by loosening the
+            # tolerance.
+            lo, hi = (a, ra), (b, rb)
+            if f_best <= 1e-2 * abs(f0):
+                hint = ("the error is noise-limited at ~"
+                        f"{f_best:.1e} (it shrank from {abs(f0):.1e}); if "
+                        "that offset is acceptable set 'newton : ... : "
+                        f"super_tolerance : {3.0 * f_best:.0e}'")
+            else:
+                hint = ("the target error JUMPS across this point (a "
+                        "discontinuity in the target: likely a branch "
+                        "switch, e.g. a spinodal, evaporation or a shape "
+                        "change of the converged state); the target value "
+                        "is not reachable on a continuous branch from this "
+                        "start -- change the target, or approach it with a "
+                        "scan from the other side. Loosening "
+                        "super_tolerance would accept a wrong state")
+            raise RuntimeError(
+                f"{label} search: the bracket collapsed at search value "
+                f"{c:.15g} with target error {fc:.3e} > super_tolerance "
+                f"{tol:.1e} (errors at the bracket ends: {lo[1]:.3e} at "
+                f"{lo[0]:.15g}, {hi[1]:.3e} at {hi[0]:.15g}); {hint}")
+        f_best = min(f_best, abs(fc))
         if fc * fb < 0.0:
-            a, fa = b, fb
+            a, fa, ra = b, fb, rb
         else:
             fa *= 0.5                              # Illinois down-weight
-        b, fb = c, fc
+        b, fb, rb = c, fc, fc
     raise RuntimeError(
         f"{label} search did not converge in {itlimit} super-iterations "
         f"(target error {fb:.2e} > {tol:.1e}); raise super_iterationlimit "
@@ -505,6 +672,36 @@ def _remap_layers(x_old, n_seg, M_old, M_new):
     return Xn.ravel()
 
 
+def _seed_by_species(x_old, sys_old, sys_new):
+    """Warm seed across a CHANGED iteration-species list on the same grid
+    (a start that adds a trace cosolvent, a new pinned type, ...): copy
+    each species' potential by NAME and zero-seed the new ones, carrying
+    the psi / beta blocks when both systems have them -- the Namics Guess
+    routine also copies by segment/state name. The plain cold start this
+    replaces dropped a symmetry-broken state onto the uniform root (u = 0
+    is an exact fixed point of a restricted molecule in a mirror box;
+    review 6 Oct 2026, #42). Initial-guess only. Returns None when x_old
+    does not have sys_old's layout."""
+    M = sys_new.lat.M
+    old_names = [sp.name for sp in sys_old.it_species]
+    off = len(old_names) * M
+    if x_old.size < off:
+        return None
+    blocks = x_old[:off].reshape(len(old_names), M)
+    parts = [blocks[old_names.index(sp.name)] if sp.name in old_names
+             else np.zeros(M) for sp in sys_new.it_species]
+    for flag in ("charged", "constraintfields"):
+        old_part = None
+        if getattr(sys_old, flag, False):
+            old_part = x_old[off:off + M]
+            off += M
+        if getattr(sys_new, flag, False):
+            parts.append(old_part if old_part is not None else np.zeros(M))
+    if off != x_old.size:
+        return None
+    return np.concatenate(parts)
+
+
 def run_file(path, verbose=True):
     """Run all calculations in a Namics input file; writes .kal/.pro next
     to the input file. Returns the last System (for interactive use)."""
@@ -533,8 +730,18 @@ def run_file(path, verbose=True):
     x_scan_prev = None          # solution of the step before x_prev, same scan
     seg_prev, M_prev, fjc_prev = None, 0, 0
     search_carry = {}           # search tuple -> root found in a prior start
+    structure_prev = {}         # mol name -> max|phi - phibulk| of last state
+    # ONE .kal column list for the whole file, from the final accumulated
+    # settings (Namics loads every kal line of the input into one table:
+    # oracle-checked 7 Oct 2026, a column declared in start 2 is filled in
+    # start 1's row too). Building it per start misaligned the rows: the
+    # header is written once, so a kal line added or repeated in a later
+    # start shifted that start's values under the wrong labels (review
+    # 6 Oct 2026, #44). A start still writes a row only once kal output is
+    # declared (as in Namics: no row for starts before the first kal line).
+    kal_columns = _output_specs(calculations[-1], "kal")
     for start_i, settings in enumerate(calculations, 1):
-        kal_specs = _output_specs(settings, "kal")
+        kal_specs = kal_columns if _output_specs(settings, "kal") else []
         pro_specs = _output_specs(settings, "pro")
         pro_bounds = _pro_write_bounds(settings)
         newton = _newton_options(settings)
@@ -577,14 +784,29 @@ def run_file(path, verbose=True):
                         raise
                     return built.solve(x0=fb, **newton)
 
+            system_prev_step = system     # previous step's/start's System
             system = System(settings)
             seg_now = tuple(s.name for s in system.it_species)
             M_now, fjc_now = system.lat.M, system.lat.fjc
             if x_prev is None:
                 seed = None
-            elif seg_now != seg_prev or fjc_now != fjc_prev:
+            elif fjc_now != fjc_prev:
                 seed = None                   # different problem structure
                 x_scan_prev = None
+                print(f"start {start_i}{tag}: FJC_choices changed -- "
+                      "starting COLD (no warm seed across a lattice "
+                      "refinement change)")
+            elif seg_now != seg_prev:
+                # the iteration-species list changed (a species added or
+                # removed): warm by NAME on the same grid, else say so
+                seed = (_seed_by_species(x_prev, system_prev_step, system)
+                        if M_now == M_prev else None)
+                x_scan_prev = None
+                if seed is None:
+                    print(f"start {start_i}{tag}: the iteration species "
+                          "AND the grid changed -- starting COLD; a "
+                          "symmetry-broken previous state may not survive "
+                          "(change one at a time to keep the warm start)")
             elif x_prev.size != system.n_var():
                 if M_now == M_prev:
                     # same grid and species, but a trailing block appeared or
@@ -602,6 +824,16 @@ def run_file(path, verbose=True):
                             if x_prev.size < nv else x_prev[:nv].copy())
                 else:
                     seed = _remap_layers(x_prev, len(seg_now), M_prev, M_now)
+                    if seed is not None and seed.size != system.n_var():
+                        seed = None
+                    if seed is None:
+                        # never cold-start silently (review 6 Oct 2026,
+                        # #26): say so, a branch change may follow
+                        print(f"start {start_i}{tag}: n_layers changed "
+                              "together with the unknowns' layout -- "
+                              "starting COLD; check the output for a "
+                              "branch change (change one at a time to keep "
+                              "the warm start)")
                 x_scan_prev = None
             else:
                 seed = x_prev
@@ -663,6 +895,26 @@ def run_file(path, verbose=True):
                                   + (1 - system.ksam) - 1).max()
                 print(f"start {start_i}{tag}: converged in {it} iterations, "
                       f"max|g| = {err:.1e}, max|phi_T-1| = {phit_dev:.1e}")
+            for mname, mm in system.molecules.items():
+                mdev = float(np.abs(mm.phi[system.lat.interior]
+                                    - mm.phibulk).max())
+                if (mm.freedom == "restricted" and mdev < 1e-6
+                        and structure_prev.get(mname, 0.0) > 1e-3):
+                    # the uniform state of a restricted molecule in a box
+                    # without walls is an EXACT fixed point, reachable from
+                    # a cold or poor seed even where it is unstable
+                    # (review 6 Oct 2026, #42)
+                    print(f"  note: mol {mname} (restricted) converged to "
+                          f"the uniform state (max|phi - phibulk| = "
+                          f"{mdev:.1e}) after a structured previous state. "
+                          "If a parameter change crossed the binodal that "
+                          "is the physical result; otherwise the solver "
+                          "landed on the trivial root (u = 0 is exact for "
+                          "it) -- keep the run warm-started (change one "
+                          "thing per start), or seed it in its own input "
+                          "('sys : initial_guess' acts on the first "
+                          "calculation only).")
+                structure_prev[mname] = mdev
             if kal_specs:
                 write_kal(kal_path(base), kal_specs, system,
                           new_file=not kal_started)

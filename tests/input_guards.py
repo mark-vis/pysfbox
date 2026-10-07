@@ -12,7 +12,8 @@ neutralizer, [7] chi symmetry + partner-side scan, [10] ghost wall needs a
 surface bound / one wall per face, [25] mon freedom values, [29] negative
 neutralizer bulk, [30] bound values + wrong-dimension keys, [31] lambda at
 fjc>1/N-D, [36] 1-D range bounds, [46] micro/bate blocks, [59] mol
-freedom/amount, [61] unused state chi, [71] UTF-8 BOM, [84] mu : 0.
+freedom/amount, [61] unused state chi, [71] UTF-8 BOM, [84] mu : 0,
+[45] var scan validation, [53] one target per var block.
 """
 import contextlib
 import io
@@ -288,6 +289,33 @@ roles = runner._var_roles(read_input(write(
     WALL + "var : mol-pol : search : phibulk\nvar : mol-pol : mu : 0\n"))[-1])
 check("mu : 0 parses as a target value",
       roles[2] and roles[2][2:] == ("mu", 0.0), str(roles))
+
+print("[45] var scan blocks are validated; [53] one target per block")
+for label, extra, words in [
+        ("scan of an undeclared mol",
+         "var : mol-poll : scan : theta\nvar : mol-poll : step : 1\n"
+         "var : mol-poll : end_value : 3\n", ["no 'mol : poll'"]),
+        ("scan of a parameter nobody reads",
+         "var : mol-pol : scan : phibluk\nvar : mol-pol : step : 0.01\n"
+         "var : mol-pol : end_value : 0.05\n", ["phibluk"]),
+        ("scan of a chi with an undeclared partner",
+         "var : mon-A : scan : chi_Q\nvar : mon-A : step : 0.1\n"
+         "var : mon-A : end_value : 0.5\n", ["'Q'"]),
+        ("scale typo",
+         "var : mol-pol : scan : phibulk\nvar : mol-pol : step : 0.01\n"
+         "var : mol-pol : end_value : 0.05\nvar : mol-pol : scale : "
+         "expnential\n", ["scale"]),
+        ("zero step",
+         "var : mol-pol : scan : phibulk\nvar : mol-pol : step : 0\n"
+         "var : mol-pol : end_value : 0.05\n", ["step : 0"]),
+        ("two targets in one block",
+         "var : mol-pol : search : theta\nvar : sys-NN : grand_potential : "
+         "0\nvar : sys-NN : free_energy : 0\n", ["targets"])]:
+    try:
+        runner._var_plan(read_input(write(WALL + extra))[-1])
+        check(label, False, "accepted")
+    except ValueError as e:
+        check(label, all(w in str(e) for w in words), str(e))
 
 print(f"all done ({failures} failure(s))")
 

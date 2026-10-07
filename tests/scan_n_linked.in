@@ -1,0 +1,35 @@
+// A var scan of `n` on a molecule that declares `theta` (review finding 24,
+// 7 Oct 2026). theta and n are LINKED (theta = n*N, Namics
+// Molecule::UpdateVarInfo sets both), and Molecule takes theta over n --
+// before the fix every scan step rewrote n while the declared theta held
+// all rows at theta = 2 (identical GP, "converged in 0 iterations"). The
+// scan now clears the linked key per step and starts from the CONVERTED
+// current amount (n = theta/N = 0.1), like Namics' PutVarInfo: rows
+// theta 2, 3, 4. Oracle (Namics 3e9eafd, same input + lattice_type +
+// output declarations): theta/n identical, GP agrees to 7e-8 relative
+// (4.0855459858787e-4 / 6.3494442e-4 / 8.7102172e-4). The .pro numbering
+// differs by design (Namics writes the first step as scan_n_linked.pro,
+// PySFBox as scan_n_linked_0.pro; REFERENCE.md "File numbering").
+lat : flat : geometry : flat
+lat : flat : n_layers : 30
+lat : flat : lowerbound : surface
+lat : flat : upperbound : mirror
+lat : flat : lattice_type : simple_cubic
+mon : X : freedom : frozen
+mon : X : frozen_range : lowerbound
+mon : A : freedom : free
+mon : W : freedom : free
+mon : A : chi_X : -1.0
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+mol : pol : composition : (A)20
+mol : pol : freedom : restricted
+mol : pol : theta : 2
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : n
+kal : sys : NN : grand_potential
+var : mol-pol : scan : n
+var : mol-pol : step : 0.05
+var : mol-pol : end_value : 0.2
+start

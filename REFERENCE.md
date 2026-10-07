@@ -135,7 +135,8 @@ unparseable and the parameter falls back to its default — matching Namics'
 ### Output file naming
 
 `.kal` rows accumulate one line per calculation / var step (reals as `%.16e`,
-ints as `%i`). `.pro` files are numbered like Namics from the input base name:
+ints as `%i`). `.pro` files are numbered from the input base name (like
+Namics, except the first scan step — see the note under File numbering):
 
 | situation | `.pro` file name |
 |---|---|
@@ -152,9 +153,15 @@ and no method guarantees convergence. The most effective tool is a
 starts from the previous converged solution, so ramping a hard parameter (a
 co-solvent, chi, wall separation) gently into a stiff regime is the documented
 way in. When only `n_layers` changes, the previous potentials are remapped onto
-the new grid; from the third scan step a secant extrapolation predicts the next
-step. These only shape the initial guess and cannot change the converged
-solution. For self-assembling structures an analytic starting field helps:
+the new grid; when a start adds or removes a species on the same grid, the
+potentials are copied by species name and the new species start at u = 0
+(Namics does the same). A start that cannot be warm-started (the grid AND the
+unknowns' layout changed together, or `FJC_choices` changed) says so and starts
+cold. From the third scan step a secant extrapolation predicts the next
+step. These only shape the initial guess and cannot change what a converged
+solution satisfies — but where several solutions exist (a symmetry-broken slab
+vs the uniform root) the seed picks the branch. For self-assembling structures
+an analytic starting field helps:
 `sys : <name> : initial_guess : polymer_adsorption / membrane / micelle`
 (honored on the first calculation only, as in Namics). If the solver stalls,
 lower `newton : … : deltamax` (the largest step it may take; default 0.1).
@@ -1002,7 +1009,8 @@ through to the next:
 
 Non-convergence raises `RuntimeError` with actionable advice ("try a smaller
 `deltamax`"); converging to a negative solvent bulk fraction also raises (the
-restricted `theta` values exceed what an equilibrium box can hold).
+restricted `theta` values exceed what an equilibrium box can hold), and so does
+a bulk that needs a negative neutralizer fraction.
 
 #### Super-iteration (search) sub-options
 
@@ -1078,12 +1086,24 @@ pro : sys : NN : psi
 `.kal` semantics: the file is created fresh (overwrite) on the first
 calculation of a run; the header is written once and every subsequent
 calculation or var step **appends** one row. Running the same input again
-overwrites (the `append` setting is not consulted).
+overwrites (the `append` setting is not consulted). The column list is built
+ONCE from every `kal` line in the file (all starts), as in Namics: a line
+added or repeated in a later start is a column of the whole file (filled in
+earlier rows too; a repeated line is a repeated column), so the table stays
+rectangular. A start writes rows only once some `kal` line has been declared.
+Column ORDER: PySFBox groups the columns by `kal : <item>` block in first-
+declaration order, Namics keeps the literal line order — read columns by their
+header label, not by position.
 
 ### File numbering (`.pro`)
 
-`.pro` files are numbered exactly like Namics (`j` = 0-based var-step index,
-`start` = 1-based `start`-block index):
+`.pro` files are numbered like Namics (`j` = 0-based var-step index,
+`start` = 1-based `start`-block index), with one deliberate difference: the
+FIRST step of a var scan is `base_0.pro` (`base_<start>_0.pro`), where Namics
+writes it without the step suffix (`base.pro`, `base_<start>.pro`) and numbers
+from `_1` on. PySFBox keeps the explicit `_0` so existing post-processing
+scripts keep working; a script written for Namics output should read step 0
+from the `_0` file:
 
 | condition | filename |
 |---|---|
@@ -1248,15 +1268,31 @@ var : <item>-<name> : <role> : <value>
 stripped.) A single block may carry more than one role. PySFBox recognises
 these roles: `scan` (a sweep), `search` (a super-iteration variable), and a
 **target property** (paired with a search). At most **one** search and **one**
-target are allowed per calculation — extra ones raise; multiple `scan` blocks do
-not raise, but only the **last** one is used.
+target are allowed per calculation — extra ones raise, including a block that
+carries two targets (settings accumulate, so a target set in an earlier start
+stays active); multiple `scan` blocks do not raise, but only the one declared
+**last** (in first-declaration order of the blocks) is used.
+
+A scan block is **validated before anything runs** (it raises with a
+did-you-mean): the `<item>-<name>` object must be declared (a typo used to
+scan a phantom block — constant physics in every row), the scanned parameter
+must be one PySFBox reads under that keyword, a `chi_X` partner must be a
+declared mon/state, `scale` must be `linear` or `exponential`, a linear `step`
+must be nonzero and an exponential `steps` positive. A `chi_W` scan of a mon
+that declares `chi - W` (documented as equivalent) writes and starts from the
+declared spelling.
 
 ### `var` scans
 
 Mark a block as a scan with `scan : <parameter>`; the swept parameter's name is
 the *value* of `scan`. The **start value is the parameter's current setting**
 (from the ordinary keyword line, defaulting to 0 if unset), not given in the
-`var` block; the scan runs from there to `end_value` inclusive.
+`var` block; the scan runs from there to `end_value` inclusive. A molecule's
+`theta` and `n` are **linked** (θ = n·N, as in Namics): each scan step sets
+the scanned one and clears the other, and a scan of `n` on a molecule that
+declares `theta` (or the reverse) starts from the converted current amount.
+(Before 7 Oct 2026 a declared `theta` silently held every row of an `n` scan
+at the same state.)
 
 ```
 mol : poly : theta : 500
@@ -1365,7 +1401,7 @@ equilibration) or the equate-to-solvent / balance-membrane searches. A
 
 | param | default | meaning |
 |---|---|---|
-| `super_tolerance` | `10 × tolerance` | target-error tolerance (don't set it below the target observable's noise floor at the inner tolerance — for `Laplace_pressure` at inner 1e-7 that is ~1e-5) |
+| `super_tolerance` | `10 × tolerance` | target-error tolerance (don't set it below the target observable's noise floor at the inner tolerance — for `Laplace_pressure` at inner 1e-7 that is ~1e-5). A bracket that collapses to round-off width with the error still above `super_tolerance` RAISES (7 Oct 2026; it used to return that point as the root): noise-limited (the error shrank by orders) → the message gives the value to set; a JUMP in the target across the point (a branch switch, spinodal, evaporation) → the message names the discontinuity and does NOT suggest loosening the tolerance |
 | `super_deltamax` | `0.5` | the bracket probes the search variable by a factor **1 + super_deltamax**. The 0.5 default suits spherical θ~R³ searches (a probe moves R only ~14%); when θ translates a delta-pinned **flat** interface directly, use ~`0.01` — a ×1.5 probe rams 50% more material against the pinned wall and the inner SCF cannot follow |
 | `super_iterationlimit` | `max(iterationlimit // 10, 30)` | max super-iterations (each = one full SCF) |
 

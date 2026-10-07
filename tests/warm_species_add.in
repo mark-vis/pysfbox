@@ -1,0 +1,43 @@
+// Warm start ACROSS a changed species list, and a kal column added in a
+// later start (review findings 42 + 44, 7 Oct 2026).
+// Start 1: a restricted (A)20 slab in a mirror box (chi 1.2, membrane seed;
+// phi max 0.75). Start 2 adds ONLY a trace free monomer B at phibulk 1e-4.
+// Before the fix a changed iteration-species list cold-started the solve:
+// u = 0 is an exact fixed point of a restricted molecule in a mirror box,
+// so start 2 "converged in 0 iterations" on the UNIFORM state (phi 0.2
+// everywhere, F -0.145) although that state lies inside the spinodal. Now
+// the potentials are copied by species NAME and B starts at u = 0 (what
+// Namics' Guess does): start 2 stays on the slab, F -1.330 vs start 1's
+// -1.293 (the additive's small perturbation). Namics also keeps start 2
+// structured (oracle phi max 0.78; its own start 1 lands elsewhere from
+// its membrane guess, so the F values are not an oracle pair).
+// The kal line added in start 2 (pol phibulk) is a column of the WHOLE
+// file, filled in start 1's row too -- the Namics behaviour (oracle-checked
+// on the same layout: one header, rectangular rows). Before the fix the
+// header kept start 1's two columns while row 2 had three fields.
+lat : flat : geometry : flat
+lat : flat : n_layers : 40
+lat : flat : lowerbound : mirror
+lat : flat : upperbound : mirror
+lat : flat : lattice_type : simple_cubic
+mon : A : freedom : free
+mon : W : freedom : free
+mon : A : chi_W : 1.2
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+mol : pol : composition : (A)20
+mol : pol : freedom : restricted
+mol : pol : theta : 8
+sys : NN : initial_guess : membrane
+output : kal : append : false
+kal : mol : pol : theta
+kal : sys : NN : free_energy
+output : pro : append : false
+pro : mol : pol : phi
+start
+mon : B : freedom : free
+mol : add : composition : (B)1
+mol : add : freedom : free
+mol : add : phibulk : 1e-4
+kal : mol : pol : phibulk
+start

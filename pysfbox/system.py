@@ -1397,7 +1397,16 @@ class System:
             alias = prop[:-6]
             v = last(self.settings.get(("alias", alias), {}), "value")
             if v is not None:
-                fv = float(v)
+                try:
+                    fv = float(v)
+                except ValueError:
+                    # a composition alias (e.g. '(A)10(B)5'): no number to
+                    # echo. NiN instead of a ValueError AFTER the solve,
+                    # which lost the row and every later start (review
+                    # 6 Oct 2026, #78)
+                    print(f"  note: alias '{alias}' has the non-numeric "
+                          f"value '{v}'; kal {key}:{name}:{prop} -> NiN")
+                    return None, None
                 return ("int", int(fv)) if fv == int(fv) else ("real", fv)
         if key == "lat":
             # the INPUT layer counts, like Namics (MX/fjc, MY/fjc, ...):
