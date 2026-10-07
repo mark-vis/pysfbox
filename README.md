@@ -45,12 +45,18 @@ agree with the C++ oracle at or near machine precision, a 28-case exercise set
 reproduces the compiled Namics output case for case, and thermodynamic
 observables (free energy, grand potential) agree to the shared convergence
 floor. A depletion profile additionally cross-validates against an independent
-SF-SCF implementation to ~4e-13, and the physics has passed two full
-first-principles reviews with adversarial verification. Where PySFBox departs
-from Namics it does so deliberately — implementing the corrected physics where
-Namics has confirmed bugs (the fixed-potential Poisson factor 2, the
-refined-lattice bond length, the weak-charge free-energy/chemical-potential
-index terms) — each noted in the relevant section below.
+SF-SCF implementation to ~4e-13, and the physics has passed three full
+first-principles reviews with adversarial verification (the latest in October
+2026). Where PySFBox departs from Namics it does so deliberately — implementing
+the corrected physics where Namics has confirmed bugs (the fixed-potential
+Poisson factor 2, the refined-lattice bond length, the weak-charge
+free-energy/chemical-potential index terms, the fixed-potential electrode's
+field energy and work term, the free-energy term of states with different χ,
+the `critical_ratio` composition) or where a Namics output column is not the
+quantity its name promises (`Laplace_pressure` is the two-sided pressure
+difference; moments of a vanishing excess print `nan`) — each noted in the
+relevant section below. Inputs that Namics refuses, and a few it accepts but
+solves wrongly, raise with an explanation instead of running.
 
 ## What it supports (v1)
 
