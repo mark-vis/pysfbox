@@ -152,6 +152,22 @@ class System:
                 raise ValueError(
                     "FJC_choices must be 3 + 2*i (i.e. 3, 5, 7, ...); "
                     f"got {FJC}")
+            if FJC > 3 and last(lp, "lattice_type") not in (None,
+                                                           "hexagonal"):
+                # the refined weights are fixed by fjc alone (the uniform
+                # bond projection, whose fjc = 1 member is the hexagonal
+                # stencil): omitting lattice_type is the natural input and
+                # stays silent; an explicit other type promises something
+                # that does not happen (Namics refuses it outright)
+                note = ("FJC_choices > 3 ignores lattice_type : "
+                        f"{last(lp, 'lattice_type')}: the refined stencil is "
+                        "the hexagonal FJC family (step variance 1/3 + "
+                        "1/(6 fjc^2) b^2); omit the line, or write hexagonal "
+                        "for inputs that must also run on Namics")
+                self.warnings.append(note)
+                if note not in _WARN_NOTES:     # once per process
+                    _WARN_NOTES.add(note)
+                    print(f"  warning: {note}")
             self.lat = Lattice1D(
                 n_layers=int(float(substitute_aliases(
                     last(lp, "n_layers"), settings))),
@@ -1155,6 +1171,26 @@ class System:
         tests/two_brushes_quick.in); spot-check a new geometry the same way."""
         return self.lat.weighted_sum(self.grand_potential_density())
 
+    def laplace_pressure(self):
+        """Two-sided Laplace pressure Delta p = p_in - p_out =
+        -omega(first interior) + omega(last interior) of a 1-gradient
+        state (omega = the grand-potential density, a local -pressure;
+        first = site fjc, last = site M - 2 fjc, the first refined site
+        of the last physical layer, mirroring the first side). Returns
+        (dp, omega_last). The kal `sys : Laplace_pressure` column AND the
+        `Laplace_pressure` search target both read this (review finding
+        58, 7 Oct 2026): Namics prints the one-sided -omega(first), which
+        is the pressure difference only when the far side sits at
+        omega = 0 (a reservoir-terminated box). With restricted phase
+        formers the implied bulk can land on a phase or an absent state,
+        omega(last) != 0, and the one-sided column is no pressure
+        difference at all. At a droplet's surface of tension R_s,
+        Delta p = 2 gamma/R_s (sphere), gamma/R_s (cylinder), 0 (flat)."""
+        lat = self.lat
+        gpd = self.grand_potential_density()
+        w_last = float(gpd[lat.M - 2 * lat.fjc])
+        return float(-gpd[lat.fjc]) + w_last, w_last
+
     def grand_potential_density(self):
         """Per-layer grand-potential density: the integrand whose lattice
         weighted_sum is grand_potential(). Exposed as the
@@ -1422,19 +1458,27 @@ class System:
         if key == "sys":
             if prop == "grand_potential":
                 return "real", self.grand_potential()
-            # Laplace pressure = -Omega density in the first interior layer
-            # (Namics PushOutput: -GrandPotentialDensity[fjc]; the bulk side
-            # has Omega density -> 0, so this is the inside/outside pressure
-            # difference of a droplet/micelle pinned by the delta constraint).
-            # CAVEAT: the per-site Omega split is a convention (only totals
-            # are physical) and PySFBox's differs from Namics by ~3-5% at a
-            # curved center (oracle-checked 21 Jul 2026, fjc=1 and fjc=2
-            # spherical micelles; the TOTAL grand_potential agrees at the
-            # floor). Fine for trends/derivatives in R; do not mix engines
-            # within one Laplace-pressure curve.
+            # Laplace pressure, TWO-SIDED: -omega(first) + omega(last)
+            # (laplace_pressure(); the same quantity the Laplace_pressure
+            # search drives). DELIBERATE deviation from Namics PushOutput,
+            # which prints -GrandPotentialDensity[fjc] only (review
+            # finding 58, 7 Oct 2026): identical whenever the far side sits
+            # at omega = 0, a note otherwise. The first-site omega matches
+            # the oracle at the solver floor (3e-9, fjc=1 spherical
+            # micelle) SINCE the symmetric chi booking in
+            # grand_potential_density (21 Jul 2026).
             if prop == "Laplace_pressure" and self.lat.gradients == 1:
-                return "real", float(
-                    -self.grand_potential_density()[self.lat.fjc])
+                dp, w_last = self.laplace_pressure()
+                if (abs(w_last) > max(1e-7, 1e-4 * abs(dp))
+                        and "laplace_two_sided" not in _WARN_NOTES):
+                    _WARN_NOTES.add("laplace_two_sided")
+                    print(f"  note: sys : Laplace_pressure: the far side "
+                          f"is not at omega = 0 (omega(last layer) = "
+                          f"{w_last:.3e}); PySFBox prints the two-sided "
+                          f"-omega(first) + omega(last) = {dp:.6e}, while "
+                          f"Namics prints -omega(first) only "
+                          f"(= {dp - w_last:.6e} here). Note printed once")
+                return "real", dp
             if prop == "phi_ratio" and self.constraintfields:
                 return "real", self.phi_ratio
             # free_energy (po) is Namics' "GP + n*mu" route to the same F

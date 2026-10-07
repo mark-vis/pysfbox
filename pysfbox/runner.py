@@ -471,8 +471,10 @@ def _target_error(system, target):
             # (~R^3) volume term from Omega(R) before a Helfrich fit.
             # LP = P_in - P_out = -(omega_in - omega_out), omega = the
             # grand-potential density (local -pressure); omega_out is the
-            # LAST interior layer (bulk side, ~0 in a healthy setup), so LP
-            # equals the kal `Laplace_pressure` output (-gpd[fjc]) there.
+            # LAST interior layer (bulk side, ~0 in a healthy setup). The
+            # kal `Laplace_pressure` column prints this same two-sided
+            # value (System.laplace_pressure, since 7 Oct 2026, review
+            # finding 58).
             # DELIBERATE deviation from Namics System::GetError case 2,
             # which uses gpd[in] + gpd[out] - val: the SUM equals the
             # pressure DIFFERENCE only when omega_out = 0, and for val != 0
@@ -480,12 +482,10 @@ def _target_error(system, target):
             # Laplace_pressure. PySFBox drives the printed observable to
             # the asked value; identical roots for the sane bulk-terminated
             # val = 0 case.
-            lat = system.lat
-            if lat.gradients != 1:
+            if system.lat.gradients != 1:
                 raise NotImplementedError(
                     "the Laplace_pressure search target is 1-gradient only")
-            gpd = system.grand_potential_density()
-            lp = float(-gpd[lat.fjc] + gpd[lat.M - 2 * lat.fjc])
+            lp, _w_last = system.laplace_pressure()
             return -(lp - val), lp
         raise NotImplementedError(
             f"var target 'sys : {prop}' is not supported")

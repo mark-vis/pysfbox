@@ -254,6 +254,45 @@ coefficients. A value that is not `3, 5, 7, …` raises
 Note: refined charged runs use the base bond length (refinement-consistent),
 which **intentionally deviates** from Namics' fjc-scaled Debye length.
 
+### Choosing a lattice
+
+Every step model is a freely jointed (Markov 1) chain; the lattice only sets
+how a bond of length b projects onto the gradient direction, and the same
+stencil sets the range of the χ contact average. The z-variance of one step
+fixes the effective segment length normal to the surface,
+b_eff = b·√(3⟨Δz²⟩/b²):
+
+| lattice | ⟨Δz²⟩/b² | b_eff/b |
+|---|---|---|
+| `simple_cubic`, `FJC_choices 3` (λ = 1/6) | 1/3 | 1.00 |
+| `hexagonal`, `FJC_choices 3` (λ = 1/4) | 1/2 | 1.22 |
+| `lambda : 1/3` (sfbox dialect) | 2/3 | 1.41 |
+| `FJC_choices 5` (fjc = 2) | 3/8 | 1.06 |
+| `FJC_choices 7` (fjc = 3) | 19/54 | 1.03 |
+| large fjc (continuum freely jointed bond) | 1/3 | 1 |
+
+The refined stencils (`FJC_choices > 3`; curved geometries in this tree) are
+one family, ⟨Δz²⟩ = (1/3 + 1/(6·fjc²))·b², whose fjc = 1 member is the
+hexagonal stencil; `lattice_type` is then ignored. Omit it (the natural input),
+or write `hexagonal` for inputs that must also run on Namics, which refuses
+anything else there; an explicit `simple_cubic` with `FJC_choices > 3` runs the
+same physics and warns once.
+
+- **Default: `simple_cubic`, `FJC_choices 3`.** Isotropic step variance,
+  cheapest, and the Namics default for most inputs.
+- **Refine (`FJC_choices 5`, check with `7`) when the interface itself is the
+  result** (tensions, widths, Tolman-type curvature corrections, thin depletion
+  or adsorption layers) on a curved lattice. A one-cell interface is pinned by
+  the lattice at fjc = 1; refinement removes that. Cost ≈ fjc² per solve.
+- **`hexagonal` at fjc = 1**: for literature or legacy-input comparison, or as
+  the first member of an FJC 3 → 5 → 7 convergence series in one bond model.
+- **`lambda : 1/3`**: only to reproduce existing sfbox calculations. It belongs
+  to no lattice and no refinement family; chains are 41 % wider normal to the
+  surface and the contact average is the broadest.
+- Bulk thermodynamics (binodals, spinodals, bulk μ) does not depend on the
+  lattice. Interfacial properties do, so a χ fitted to interfacial data on one
+  lattice does not transfer to another; a χ from bulk data does.
+
 ### Boundaries (1-gradient)
 
 | keyword | values | default | meaning |
@@ -1063,7 +1102,7 @@ pro : sys : NN : psi
 
 ### Spec-line details
 
-- **`*` wildcard** — `kal : mol : * : phi` / `pro : mon : * : phi` expands to
+- **`*` wildcard** — `kal : mol : * : theta` / `pro : mon : * : phi` expands to
   every molecule / every monomer in definition order (Namics behaviour).
 - **Repeated props** — the same `key:name` may carry several props on separate
   lines (e.g. `kal : mon : A : 1st_M_phi_z` then `kal : mon : A : 2nd_M_phi_z`);
@@ -1132,9 +1171,9 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 |---|---|---|---|
 | `lat` | `n_layers` | int | the input layer count (`n_layers`, or `n_layers_x` on N-D) — not the refined count at `FJC_choices` > 3, like Namics |
 | `lat` | `n_layers_x`/`_y`/`_z` | int | the input layer count along that axis (N-D) |
-| `lat` | `volume` | real | total lattice volume (Σ site volumes) |
+| `lat` | `volume` | real | geometric volume of the interior lattice (closed form). On refined curved lattices (`FJC_choices > 3`) the summed site volumes differ from it by a few %, so θ − φ_b·volume is not an excess there; use `theta_exc` |
 | `sys` | `grand_potential` | real | grand potential Ω (per unit area / normalised as in Namics) |
-| `sys` | `Laplace_pressure` | real | −Ω-density in the first interior layer (1-gradient; the inside/outside pressure difference of a pinned droplet/micelle; per-site Ω split follows Namics' symmetric χ booking) |
+| `sys` | `Laplace_pressure` | real | the pressure difference across the system, Δp = p<sub>in</sub> − p<sub>out</sub> = −ω(first interior layer) + ω(last interior layer), with ω(z) the grand-potential density (`pro : sys : X : grand_potential_density`, a local −pressure; 1-gradient; at fjc > 1 the first refined site of each outer physical layer). For a droplet/micelle/vesicle centred at the lower bound whose far side reaches a bulk plateau this is the Laplace pressure: Δp = 2γ/R<sub>s</sub> (sphere) or γ/R<sub>s</sub> (cylinder) at the surface of tension R<sub>s</sub>, 0 across a flat interface, and 0 at the pressure-balanced (tensionless) point that the `Laplace_pressure` search drives to. It is NOT a pressure difference when either end layer is not a bulk plateau (a wall, a brush, a box too small for the far field). **Deliberate deviation from Namics** (7 Oct 2026): Namics prints −ω(first) only, which equals Δp only when the far side sits at ω = 0 (a reservoir-terminated box: free molecules set the far field — every regression with this column is of this kind and printed unchanged). With restricted phase formers the implied bulk can land on a phase or an absent state, the far plateau carries ω ≠ 0, and the one-sided value is no pressure difference (a flat two-phase box: one-sided −0.0396, two-sided 3e-11). PySFBox prints a one-time note giving both values whenever the magnitude of ω(last) exceeds max(1e-7, 1e-4 × the magnitude of Δp), i.e. whenever the column differs visibly from Namics'. Same quantity as the `Laplace_pressure` search target |
 | `sys` | `phi_ratio` | real | the delta-constraint target ratio r (constraint runs only) |
 | `sys` | `free_energy`, `free_energy(po)` | real | Helmholtz free energy F (both spellings map to F; `(po)` is Namics' Ω + Σnμ route to the same value) |
 | `sys` | `iterations` | int | solver iteration count (solver-dependent; ignored in regression diffs) |
@@ -1219,7 +1258,9 @@ written column sums to F/Ω.
 - **free_energy (F)** — the Helmholtz free energy; F = Ω + Σ n μ. Keeps the
   full (un-halved) χ against frozen walls, unlike Ω (the two conventions
   differ only in how the frozen-surface coupling is booked).
-- **mu (μ)** — the molecular chemical potential; dF/dθ. Drives `search` on
+- **mu (μ)** — the molecular chemical potential, per MOLECULE (n = θ/N).
+  It is not dF/dθ: in a closed incompressible box exchanging against the
+  solvent S, dF/dθ_i = μ_i/N_i − μ_S/N_S. Drives `search` on
   `mol : ... : mu` and equals the μ from the exchange/free-energy accounting.
 - **psi (ψ)** — the dimensionless electrostatic potential (units of kT/e) from
   the lattice Poisson solve; ≈ 0 over neutral regions.
@@ -1381,12 +1422,17 @@ changes; saves 3–6 full solves per sweep step).
 |---|---|---|
 | `sys` | `grand_potential` | drive Ω to the value |
 | `sys` | `free_energy` | drive F to the value |
-| `sys` | `Laplace_pressure` | drive the inside/outside pressure difference −ω(first interior) + ω(last interior) to the value (1-gradient; typically 0, the pressure-balanced state of a delta-constraint-pinned droplet/membrane that removes the ΔP·V ~ R³ term from Ω(R) before a Helfrich fit) |
+| `sys` | `Laplace_pressure` | drive the inside/outside pressure difference −ω(first interior) + ω(last interior) — the kal `Laplace_pressure` column — to the value (1-gradient; typically 0, the pressure-balanced state of a delta-constraint-pinned droplet/membrane that removes the ΔP·V ~ R³ term from Ω(R) before a Helfrich fit) |
 | `mol` | `mu` | drive chemical potential to a **numeric** value |
 | `mol` | `theta` / `n` / `phibulk` | drive that molecule quantity to the value |
 
-For `Laplace_pressure` PySFBox drives its own printed kal observable to the
-target — a DELIBERATE deviation from Namics' GetError case 2 (the sum
+For `Laplace_pressure` PySFBox drives the TWO-SIDED pressure difference
+−ω(first interior) + ω(last interior) to the asked value — the same quantity
+the kal `Laplace_pressure` column prints (both since 7 Oct 2026 read
+`System.laplace_pressure`, so a converged search reproduces its own kal value).
+Namics' printed column is −ω(first interior) only; the two agree when the far
+side sits at ω = 0, the normal reservoir-terminated case. This is a
+DELIBERATE deviation from Namics' GetError case 2 (the sum
 ω(in)+ω(out), which equals the pressure difference only when ω_out = 0 and
 for a nonzero target has the opposite sign of Namics' own printed
 `Laplace_pressure`); the roots coincide in the sane bulk-terminated

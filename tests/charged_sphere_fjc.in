@@ -22,6 +22,7 @@ lat : S : n_layers : 30
 lat : S : gradients : 1
 lat : S : lattice_type : simple_cubic
 lat : S : FJC_choices : 5
+lat : S : lattice_type : hexagonal
 lat : S : bondlength : 3e-10
 
 mon : X : freedom : pinned

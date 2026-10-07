@@ -317,6 +317,19 @@ for label, extra, words in [
     except ValueError as e:
         check(label, all(w in str(e) for w in words), str(e))
 
+print("[lattice] FJC_choices > 3 ignores lattice_type")
+SPH = WALL + "lat : flat : geometry : spherical\nlat : flat : FJC_choices : 5\n"
+s_sc = build(SPH + "lat : flat : lattice_type : simple_cubic\n")
+check("explicit simple_cubic + FJC 5 warns that lattice_type is ignored",
+      any("ignores lattice_type" in w for w in s_sc.warnings),
+      str(s_sc.warnings))
+s_om = build(SPH)
+check("omitted lattice_type + FJC 5 stays silent",
+      not any("ignores lattice_type" in w for w in s_om.warnings))
+s_hx = build(SPH + "lat : flat : lattice_type : hexagonal\n")
+check("hexagonal + FJC 5 does not warn",
+      not any("ignores lattice_type" in w for w in s_hx.warnings))
+
 print(f"all done ({failures} failure(s))")
 
 
