@@ -1734,9 +1734,19 @@ class System:
             kind = last(params, "initial_guess", kind)
         if kind in (None, "previous_result", "none"):
             return None
+        if kind not in ("polymer_adsorption", "membrane", "micelle"):
+            raise NotImplementedError(
+                f"sys : initial_guess : {kind} is not supported in PySFBox "
+                "(supported: polymer_adsorption, membrane, micelle, "
+                "previous_result, none); guess files and membrane_torus "
+                "need the C++ Namics")
         if self.lat.gradients > 1:
             # the analytic adsorption/membrane guesses are 1-gradient; N-D
-            # calculations cold-start (the runner still warm-starts scans)
+            # calculations cold-start (the runner still warm-starts scans).
+            # Say so: a declared guess must never vanish silently (review
+            # 6 Oct 2026, #34 -- an unknown kind used to be dropped here too)
+            print(f"  note: initial_guess : {kind} is 1-gradient only; this "
+                  "N-D calculation cold-starts")
             return None
         lat = self.lat
         U = np.zeros((len(self.it_species), lat.M))
@@ -1773,12 +1783,6 @@ class System:
             if not found:
                 print("  note: no 'solvo'phobic segment found; the "
                       f"{kind} initial guess may not help (as in Namics)")
-        else:
-            raise NotImplementedError(
-                f"sys : initial_guess : {kind} is not supported in PySFBox "
-                "(supported: polymer_adsorption, membrane, micelle, "
-                "previous_result, none); guess files and membrane_torus "
-                "need the C++ Namics")
         # pad with zeros for the trailing psi block (charged systems), else
         # solve() silently rejects the guess by size (latent bug, fixed
         # 21 Jul 2026 in lockstep with the dev tree)

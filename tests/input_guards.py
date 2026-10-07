@@ -330,6 +330,20 @@ s_hx = build(SPH + "lat : flat : lattice_type : hexagonal\n")
 check("hexagonal + FJC 5 does not warn",
       not any("ignores lattice_type" in w for w in s_hx.warnings))
 
+print("[34] a declared initial_guess never vanishes silently on N-D")
+NDW = ND + "lat : flat : lowerbound_x : surface\n"
+try:
+    build(NDW + "sys : NN : initial_guess : membrane_tours\n").initial_guess()
+    check("typo kind on N-D raises", False, "no raise")
+except NotImplementedError as e:
+    check("typo kind on N-D raises", "membrane_tours" in str(e), str(e))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    x0 = build(NDW + "sys : NN : initial_guess : polymer_adsorption\n"
+               ).initial_guess()
+check("1-gradient kind on N-D cold-starts with a note",
+      x0 is None and "cold-starts" in buf.getvalue(), buf.getvalue())
+
 print(f"all done ({failures} failure(s))")
 
 
