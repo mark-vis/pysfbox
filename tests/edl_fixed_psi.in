@@ -8,6 +8,16 @@
 // were first validated bug-compatibly against the oracle at machine
 // precision (phi 7e-12, psi 2e-10), so the deviation is exactly the
 // documented factor and nothing else. 4 Jul 2026.
+// Two further deliberate deviations since 7 Oct 2026 (review findings 2
+// and 3, references regenerated): the field energy EE in the segment
+// weights uses psi0 at the electrode (Namics: the auxiliary behind-
+// electrode value, which with these unequal epsilons moved contact Na by
+// -15%), and grand_potential includes the electrode work term -sigma*psi0/2
+// (constant-potential ensemble, dOmega/dpsi0 = -sigma). Old -> new:
+// Omega 1.2828e-04 -> -6.3081e-03; contact Na 0.0118034 -> 0.0138771.
+// The state equals a fixed-charge wall tuned to psi(1) = -1 to 1e-14.
+// The u columns are the full potentials (finding 50): u = -ln(phi/phibulk)
+// for these monomers.
 
 lat : mylat : gradients : 1
 lat : mylat : geometry : planar
@@ -51,6 +61,8 @@ output : pro : DOS : true
 pro : mol : * : phi
 pro : sys : NN : q
 pro : sys : NN : psi
+pro : mon : Na : u
+pro : mon : Cl : u
 
 
 output : kal : DOS : true

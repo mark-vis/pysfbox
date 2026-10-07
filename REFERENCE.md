@@ -478,7 +478,14 @@ state explicitly, and states inherit their parent mon's χ unless overridden.
   **mutually exclusive** with `valence` (`valence and e.psi0/kT are mutually
   exclusive`). A fixed surface potential on a **curved** (cylindrical/spherical)
   lattice raises `fixed surface potential (e.psi0/kT) on a curved lattice is not
-  supported yet`.
+  supported yet`. With an electrode, `grand_potential` and `free_energy` are the
+  **constant-potential** quantities: they include the electrode work term
+  `−½ σ ψ0` (σ = the charge the electrode takes up), so `dΩ/dψ0 = −σ` (the
+  Lippmann relation) holds. The equivalent fixed-charge wall (`valence` = σ at the
+  same site) reports `Ω_σ = Ω + σψ0`. The field energy that enters the segment
+  weights is built from ψ0 at the electrode site. Both are deliberate deviations
+  from Namics, which omits the work term and builds the field energy from the
+  auxiliary behind-electrode potential.
 - **`valence` is ignored once states exist.** If a multistate segment (weak
   charge, via `state`/`reaction` blocks) also carries a mon-level `valence`, the
   mon-level value is dropped with a warning — the per-state valences carry the
@@ -1139,10 +1146,10 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 |---|---|---|
 | `mol` | `phi` | volume-fraction profile of the molecule |
 | `mon` | `phi` | volume-fraction profile of the monomer |
-| `mon` | `u` | self-consistent potential field u(z) of the monomer |
+| `mon` | `u` | self-consistent potential field u(z) of the monomer: the full exponent of its Boltzmann weight, `w + v·ψ − ε·EE` (w the per-site field the solver iterates, v the valence, EE the field energy), so a free monomer has φ = φ_b·exp(−u) |
 | `mon` | `phi-<state>` | per-state density profile (parent-monomer output) |
 | `mon` | `alpha-<state>` | per-state degree-of-dissociation profile α(z) |
-| `mon` | `u-<state>` | per-state potential field |
+| `mon` | `u-<state>` | per-state potential field, the full exponent as for `u` (matches Namics' `u-<state>`) |
 | `sys` | `alpha` | incompressibility (Lagrange) field α(z) |
 | `sys` | `psi` | electrostatic potential ψ(z) — charged systems only |
 | `sys` | `q` | charge-density profile q(z) — charged systems only |

@@ -449,6 +449,7 @@ class System:
                         "electroneutrality (as in Namics)")
             self.psi = np.zeros(lat.M)
             self.q = np.zeros(lat.M)
+            self.q_electrode = np.zeros(lat.M)   # set by _psi_residual
             self.EE = np.zeros(lat.M)
             self.eps_prof = np.full(lat.M, 80.0)
         else:
@@ -885,19 +886,25 @@ class System:
             self.beta = x[nb:nb + lat.M] * self.delta_mask
         if self.charged:
             psi_raw = x[S * lat.M:(S + 1) * lat.M]
-            # FIDELITY NOTE (matches Namics PutU/DoElectrostatics order):
-            # the segment weights and the field energy EE use the RAW
-            # iterated psi -- fixed-potential sites are filtered out of the
-            # solver and their x entries stay at the initial guess -- while
-            # the Poisson update below sees the EFFECTIVE psi with the
-            # fixed values (PSI0) substituted.
-            EE = self._field_energy(lat.set_mirror_bounds(psi_raw))
+            # At an electrode site the raw unknown is the auxiliary
+            # behind-electrode value (see _psi_residual); the physical
+            # potential there is psi0. The Poisson rows, the segment
+            # weights AND the field energy EE all use this EFFECTIVE psi:
+            # the Born term -eps*EE and the Poisson equation are both
+            # derivatives of the same bond energy -eps(dpsi)^2/2, so they
+            # must see the same potential. (Namics PutU builds EE from the
+            # raw psi instead -- with free species of different epsilon
+            # the contact layer then feels (psi_bw - psi_2)^2 rather than
+            # (psi0 - psi_2)^2, -15% Na at contact on edl_fixed_psi;
+            # review finding 2, 7 Oct 2026. Away from electrodes raw and
+            # effective psi coincide.)
             psi = psi_raw.copy()
             if self.fixedPsi0:
                 psi[self.psiMask] = self.psi0_profile[self.psiMask]
             psib = lat.set_mirror_bounds(psi)   # psi ghosts ALWAYS mirror
+            EE = self._field_energy(psib)
             self.psi, self.EE = psi, EE
-            self.compute_phis(u, psi=psi_raw, EE=EE)
+            self.compute_phis(u, psi=psi, EE=EE)
         else:
             self.compute_phis(u)
         phitot = sum((s.phi for s in self.segments.values()),
@@ -1095,6 +1102,12 @@ class System:
                     "boundary-adjacent layers only (as in the Namics "
                     "examples); interior electrodes are not yet ported to PySFBox")
             x_target = np.zeros(lat.M)
+            # the charge the electrode takes up from its reservoir (the
+            # battery), per site in the units of q: Gauss's law at the
+            # electrode site with the free-side flux, minus any charge
+            # the electrode segment carries itself. Booked by the
+            # electrode work term in grand_potential_density.
+            self.q_electrode = np.zeros(lat.M)
             for i in el:
                 nb = i + 1 if i == 1 else i - 1     # the free-side neighbour
                 gh = i - 1 if i == 1 else i + 1     # the ghost-side cell
@@ -1106,6 +1119,8 @@ class System:
                 a_nb = eps[i] + eps[nb]
                 x_target[i] = psi0 - (a_nb * (psi_raw[nb] - psi0)
                                       + C2 * q[i]) / a_gh
+                self.q_electrode[i] = (-a_nb * (psi_raw[nb] - psi0) / C2
+                                       - q[i])
             free = ~self.psiMask[1:-1]
             g_psi[1:-1] = np.where(free, psi_raw[1:-1] - X,
                                    (psi_raw - x_target)[1:-1])
@@ -1183,6 +1198,15 @@ class System:
             omega += self.EE * self.eps_prof - 0.5 * self.q * self.psi
             omega *= self.ksam
             omega += (1.0 - self.ksam) * 0.5 * self.q * self.psi
+            # electrode work term: at a fixed potential the electrode
+            # exchanges charge q_el with its reservoir. Integrated by
+            # parts, the field-energy tail above already holds the
+            # boundary term +q_el*psi0/2 (the fixed-charge booking of that
+            # charge); the constant-potential grand potential subtracts
+            # the reservoir work q_el*psi0: net -q_el*psi0/2 at the
+            # electrode site. Then dOmega/dpsi0 = -sigma (Lippmann). Absent
+            # in Namics GetGrandPotential (review finding 3, 7 Oct 2026).
+            omega -= 0.5 * self.q_electrode * self.psi
             return omega
         omega *= self.ksam
         return omega
@@ -1220,6 +1244,28 @@ class System:
         u = self._u_current
         for i, sp in enumerate(self.it_species):
             F -= sp.phi * u[i]
+        # state-redistribution term (review finding 5, 7 Oct 2026). u_s is
+        # bulk-referenced: u_s = sum_t chi_st (<phi_t> - phi_t^b) + alpha,
+        # so the annealed weight alphabulk_s exp(-u_s) carries
+        # c_s = sum_t chi_st phi_t^b as if it were an intrinsic state
+        # energy, and the field term above books +sum_s c_s phi_s too
+        # much. The part c_s alphabulk_s phi_X is linear in the molecule
+        # amounts and is matched in mu; the rest, c_s (phi_s - alphabulk_s
+        # phi_X), depends on the local state fractions and is removed
+        # here. Zero for stateless species, when all states of a mon share
+        # c_s, and in a uniform bulk -- which is why the state-independent-
+        # chi validations never saw it. Restores dF/dn = mu and
+        # F = Omega + sum n mu with state-dependent chi.
+        if self.has_states:
+            pbulk = {p.name: (self.phibulk_seg.get(p.seg.name, 0.0)
+                              * p.alphabulk) for p in self.partners}
+            for sp in self.it_species:
+                if sp.state is None:
+                    continue
+                c_s = sum(_species_chi(sp, p) * pbulk[p.name]
+                          for p in self.partners)
+                if c_s:
+                    F -= c_s * (sp.phi - sp.alphabulk * sp.seg.phi)
         if self.constraintfields:
             # the -phi*u accounting for the constraint field: molecule A's
             # segments felt u+beta, B's u-beta, and beta is not in the
@@ -1279,6 +1325,9 @@ class System:
             # Namics GetFreeEnergy charged term: + q*psi/2 (added after the
             # KSAM cleanup, so it includes the surface sites)
             F = F + 0.5 * self.q * self.psi
+            # the electrode work term, same booking as in
+            # grand_potential_density (F = Omega + sum n mu keeps closing)
+            F = F - 0.5 * self.q_electrode * self.psi
         return F
 
     def chemical_potential(self, mol):
@@ -1466,6 +1515,22 @@ class System:
                 return "real", np.sqrt(fl) if fl > 0 else 0.0
         return None, None
 
+    def _full_potential(self, i):
+        """The potential iteration species i actually feels, in kT: the
+        exponent of its Boltzmann weight in compute_phis, u + valence*psi
+        - eps*EE. This is what Namics' Seg->u holds after PutU and what
+        `pro mon : X : u` / `u-<state>` print; the bare iteration variable
+        u omits the electrostatic and Born parts (review finding 50,
+        7 Oct 2026: counter-ions at a charged wall printed a repulsive u
+        where they accumulate). Uncharged species: unchanged."""
+        sp = self.it_species[i]
+        u_tot = self._last_u[i]
+        if self.charged:
+            if sp.valence != 0.0:
+                u_tot = u_tot + sp.valence * self.psi
+            u_tot = u_tot - sp.seg.epsilon * self.EE
+        return u_tot
+
     def get_profile(self, key, name, prop):
         """Profile arrays for .pro output (interior incl. ghosts)."""
         if key == "mol" and name in self.molecules and prop == "phi":
@@ -1498,11 +1563,11 @@ class System:
                 if prop == f"u-{st.name}":
                     for i, sp in enumerate(self.it_species):
                         if sp.state is st:
-                            return self._last_u[i]
+                            return self._full_potential(i)
         if key == "mon" and name in self.segments and prop == "u":
             for i, sp in enumerate(self.it_species):
                 if sp.state is None and sp.name == name:
-                    return self._last_u[i]
+                    return self._full_potential(i)
             return None
         if key == "sys" and prop == "alpha":
             return self.alpha
