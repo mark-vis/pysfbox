@@ -39,8 +39,17 @@ def read_input(path):
     Each calculation is settings[(key, name)][param] = [values...], with
     settings accumulated over consecutive `start` blocks.
     """
-    with open(path) as f:
-        lines = f.readlines()
+    # UTF-8 with an optional byte-order mark (a BOM used to glue itself to
+    # the first key, so the first line was dropped as an unknown block --
+    # review 6 Oct 2026, #71); a non-UTF-8 file (e.g. a cp1252 comment)
+    # falls back to latin-1, which decodes every byte
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    lines = text.splitlines()
 
     calculations = []
     settings = OrderedDict()
@@ -89,3 +98,10 @@ def substitute_aliases(text, settings):
         if key == "alias" and "value" in params:
             text = text.replace(f"#{name}#", str(params["value"][-1]))
     return text
+
+
+def _suggest(word, candidates):
+    """A ' (did you mean ...?)' hint for a misspelled keyword value, or ''."""
+    import difflib
+    m = difflib.get_close_matches(word, sorted(candidates), n=1, cutoff=0.6)
+    return f" (did you mean '{m[0]}'?)" if m else ""

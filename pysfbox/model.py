@@ -9,7 +9,7 @@ import re
 
 import numpy as np
 
-from .inputreader import last
+from .inputreader import last, _suggest
 
 
 # ---------------------------------------------------------------- segments
@@ -17,12 +17,34 @@ class Segment:
     def __init__(self, name, params, lat):
         self.name = name
         self.lat = lat
-        self.freedom = last(params, "freedom", "free")
+        self.freedom = str(last(params, "freedom", "free")).strip()
+        # Namics validates the freedom against its option list (segment.cpp
+        # :1066-1075); an unchecked value used to fall through to an
+        # ordinary FREE segment -- a misspelled 'pined' brush floated away
+        # and a 'Frozen' wall vanished, silently (review 6 Oct 2026, #25)
+        if self.freedom in ("tagged", "clamp"):
+            raise NotImplementedError(
+                f"mon {name}: freedom : {self.freedom} is not yet ported to "
+                "PySFBox; use the C++ Namics (or freedom : pinned for a "
+                "grafted segment)")
+        if self.freedom not in ("free", "pinned", "frozen"):
+            raise ValueError(
+                f"mon {name}: freedom '{self.freedom}' not recognized "
+                "(choose free, pinned or frozen; case matters)"
+                + _suggest(self.freedom.lower(),
+                           ("free", "pinned", "frozen")))
         self.chi = {}  # chi[other_name] = value
         for p, v in params.items():
             pk = p.replace(" ", "")          # accept chi_X / chi-X / "chi - X"
             if pk.startswith("chi_") or pk.startswith("chi-"):
                 self.chi[pk[4:]] = float(v[-1])
+                if pk[4:] == name and self.chi[name] != 0.0:
+                    # chi is an EXCHANGE parameter: chi_AA = 0 by
+                    # definition (Namics refuses it too, system.cpp:1790)
+                    raise ValueError(
+                        f"mon {name} : chi_{name} : {v[-1]} -- the "
+                        "self-interaction chi must be 0 (chi is an exchange "
+                        "parameter between DIFFERENT segment types)")
         # electrostatics (cf. Namics segment.cpp:1078-1113): valence in units
         # of e, relative permittivity (default 80, water-like), and an
         # optional fixed dimensionless surface potential e*psi0/kT on FROZEN
@@ -45,12 +67,24 @@ class Segment:
         self.on_lower_surface = False
         self.on_upper_surface = False
         self.surface_face = None            # (axis, 'lo'|'hi') for ND walls
+        self.in_ghost = False               # wall lives in a ghost layer
         rng = last(params, "frozen_range") or last(params, "pinned_range")
         if self.freedom in ("frozen", "pinned"):
             if rng is None:
                 raise ValueError(f"mon {name}: freedom {self.freedom} "
                                  f"requires a {self.freedom}_range")
             self._set_range(rng)
+        if self.in_ghost and (self.valence != 0.0 or self.fixed_psi0):
+            # the Poisson rows are interior-only: a charge (or an electrode)
+            # in the ghost layer never reaches them, and the wall ran as a
+            # NEUTRAL one (review 6 Oct 2026, #4; Namics refuses it,
+            # system.cpp:1213-1215)
+            what = ("valence" if self.valence != 0.0 else "e.psi0/kT")
+            raise ValueError(
+                f"mon {name}: a charged wall ({what}) cannot sit in the "
+                "boundary (ghost) layer -- its charge would never enter "
+                "the Poisson equation; put it on the first interior layer, "
+                "frozen_range : 1;1 (or the last: n;n)")
         self.phi = np.zeros(lat.M)
         self.phibulk = 0.0
         # internal states (weak charges); attached by System from the
@@ -77,8 +111,15 @@ class Segment:
                 axis, end = self.surface_face
                 self.on_lower_surface = (axis == 0 and end == "lo")
                 self.on_upper_surface = (axis == 0 and end == "hi")
+                if not np.any(self.range_mask):
+                    # 'lowerbound'/'upperbound': a wall in the GHOST band
+                    # only (an interior face box keeps its own layer)
+                    self._check_ghost_wall(
+                        "lower" if end == "lo" else "upper",
+                        lat.bounds[axis][0 if end == "lo" else 1])
             return
         fjc = lat.fjc
+        n = lat.MX // fjc                    # physical layers
         r = rng.strip().lower().rstrip(";")  # Namics tolerates 'lowerbound;'
         if r == "lowerbound":
             self.on_lower_surface = True       # lives in the ghost layers
@@ -89,8 +130,55 @@ class Segment:
         elif r in ("lastlayer", "last_layer"):
             self.range_mask[lat.MX:lat.MX + fjc] = 1.0
         else:
-            lo, hi = (int(x) for x in r.split(";"))
-            self.range_mask[lo * fjc:(hi + 1) * fjc] = 1.0
+            try:
+                lo, hi = (int(x) for x in r.split(";"))
+            except ValueError:
+                raise ValueError(
+                    f"mon {self.name}: range '{rng}' not understood (1-"
+                    "gradient grammar 'lo;hi' in layers, or lowerbound, "
+                    "upperbound, firstlayer, lastlayer)") from None
+            # Namics' coordinate window 0..n+1 (segment.cpp:494-516): the
+            # ghost coordinates 0 and n+1 ARE the boundary walls (as
+            # 'lowerbound'/'upperbound'); anything else outside used to
+            # slice silently into a ghost or an empty mask (review 6 Oct
+            # 2026, #36)
+            if not 0 <= lo <= hi <= n + 1:
+                raise ValueError(
+                    f"mon {self.name}: range '{rng}' is outside the lattice "
+                    f"(need 0 <= lo <= hi <= {n + 1}; layers 1..{n} are "
+                    f"the interior, 0 and {n + 1} the boundary walls)")
+            if lo == 0:
+                self.on_lower_surface = True
+                lo = 1
+            if hi == n + 1:
+                self.on_upper_surface = True
+                hi = n
+            if lo <= hi:
+                self.range_mask[lo * fjc:(hi + 1) * fjc] = 1.0
+        if self.on_lower_surface:
+            self._check_ghost_wall("lower", lat.lowerbound)
+        if self.on_upper_surface:
+            self._check_ghost_wall("upper", lat.upperbound)
+
+    def _check_ghost_wall(self, side, bound):
+        """A range in the GHOST layer (lowerbound/upperbound, or coordinate
+        0/n+1) is a solid wall only if the lattice bound on that face is
+        'surface': with a mirror (or periodic) bound the free species fill
+        the same ghost by reflection, so the wall's layer is occupied twice
+        and chains reflect off it instead of losing those steps (review 6
+        Oct 2026, #10; Namics refuses it, segment.cpp:478-487)."""
+        self.in_ghost = True
+        if self.freedom != "frozen":
+            raise ValueError(
+                f"mon {self.name}: a {self.freedom} range cannot lie in the "
+                f"{side} boundary (ghost) layer -- only a frozen wall can; "
+                "use interior layers")
+        if bound != "surface":
+            raise ValueError(
+                f"mon {self.name}: frozen wall at the {side} boundary needs "
+                f"'lat : ... : {side}bound : surface' (got '{bound}'); "
+                "alternatively put the wall on an interior layer, e.g. "
+                "frozen_range : 1;1")
 
     def chi_with(self, other):
         # chi table is symmetric; defined on either side, default 0
@@ -337,7 +425,39 @@ class Molecule:
     def __init__(self, name, params, segments, lat, composition):
         self.name = name
         self.lat = lat
-        self.freedom = last(params, "freedom", "free")
+        # a molecule without its freedom, or a free/restricted one without
+        # its amount, used to default to an EMPTY molecule -- every output
+        # then described the system without it, silently (review 6 Oct
+        # 2026, #59; Namics refuses all three, molecule.cpp:460-566). An
+        # explicit 'theta : 0' / 'phibulk : 0' stays the way to switch a
+        # molecule off.
+        freedom = last(params, "freedom")
+        if freedom is None:
+            raise ValueError(
+                f"mol {name}: no 'freedom' given (free, restricted, solvent "
+                "or neutralizer)")
+        self.freedom = str(freedom).strip()
+        if self.freedom in ("range_restricted", "fill_range", "clamped",
+                            "tagged", "gradient"):
+            raise NotImplementedError(
+                f"mol {name}: freedom : {self.freedom} is not yet ported to "
+                "PySFBox; use the C++ Namics")
+        if self.freedom not in ("free", "restricted", "solvent",
+                                "neutralizer"):
+            raise ValueError(
+                f"mol {name}: freedom '{self.freedom}' not recognized (free, "
+                "restricted, solvent or neutralizer)"
+                + _suggest(self.freedom.lower(), ("free", "restricted",
+                                                  "solvent", "neutralizer")))
+        if self.freedom == "free" and last(params, "phibulk") is None:
+            raise ValueError(
+                f"mol {name}: freedom : free needs a 'phibulk' (the bulk "
+                "volume fraction)")
+        if self.freedom == "restricted" and last(params, "theta") is None \
+                and last(params, "n") is None:
+            raise ValueError(
+                f"mol {name}: freedom : restricted needs 'theta' (the amount "
+                "in the box) or 'n' (the number of molecules)")
         comp = re.sub(r"\s+", "", composition)
         if not comp.startswith("@"):
             # group-repeat sugar ((O)1(C)2)5 is linear-syntax only; @dend/

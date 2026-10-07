@@ -91,7 +91,32 @@ class LatticeND:
         else:
             self.bounds = [default[a] if bounds[a] is None else bounds[a]
                            for a in range(self.gradients)]
+        self._check_bounds()
         self._build_metric()
+
+    # -- input validation (review 6 Oct 2026, #30) --------------------------
+    def _check_bounds(self):
+        """Bound values: mirror, surface or periodic; periodic on BOTH faces
+        of an axis, and only on a cartesian (x/z) axis -- a one-sided or
+        radial 'periodic' gives a stencil that is not L-symmetric and does
+        not conserve mass."""
+        for a, (lo, hi) in enumerate(self.bounds):
+            for b in (lo, hi):
+                if b not in ("mirror", "surface", "periodic"):
+                    raise ValueError(
+                        f"lat: boundary '{b}' on axis {a} not recognized "
+                        "(mirror, surface or periodic)")
+            if "periodic" in (lo, hi):
+                role = self.roles[a]
+                if lo != hi:
+                    raise ValueError(
+                        f"lat: 'periodic' on axis {a} must be set on BOTH "
+                        f"its lower and upper bound (got {lo}/{hi})")
+                if role not in ("x", "z"):
+                    raise ValueError(
+                        f"lat: 'periodic' is not allowed on the {role} "
+                        f"axis (axis {a}) of the {self.geometry} lattice "
+                        "(only cartesian axes)")
 
     # -- finite-volume metric ---------------------------------------------
     def _axis_geom(self, a):

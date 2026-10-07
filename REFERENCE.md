@@ -211,7 +211,7 @@ lat : L : n_layers : 100
 | `gradients` | `1`, `2`, `3` | `1` | number of spatial gradients; selects the 1-gradient `Lattice1D` or the N-gradient `LatticeND`. Any other value raises. |
 | `geometry` | see tables below | `planar` (1D) / `flat` (N-D) | coordinate system. `flat` and `planar` are synonyms. |
 | `lattice_type` | `simple_cubic`, `hexagonal` | `simple_cubic` | sets the neighbour-transition weight λ (`simple_cubic` → 1/6, `hexagonal` → 1/4). N-D accepts `simple_cubic` only. |
-| `lambda` | real in (0, ½) | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). 1-gradient only. |
+| `lambda` | real in (0, ½) | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). Honoured on the 1-gradient lattice at `FJC_choices 3` only; with `FJC_choices > 3` or `gradients > 1` (whose stencils have no λ to replace) it raises. |
 | `n_layers` | integer | *(required, 1D)* | number of physical layers z = 1..n_layers (see FJC refinement). Missing raises. |
 | `FJC_choices` | `3`, `5`, `7`, … | `3` | lattice refinement (freely-jointed-chain sub-layers). `3` = unrefined (fjc = 1). |
 | `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. |
@@ -259,9 +259,12 @@ which **intentionally deviates** from Namics' fjc-scaled Debye length.
   propagators). Frozen surface segments (`mon : S : freedom : frozen`) pin the
   ghost density explicitly.
 
-Only `mirror` and `surface` are meaningful in 1-gradient; any other value
-(e.g. `periodic`) is treated as `mirror`. `periodic` is a genuine option only
-in the N-D lattice (below).
+Any other value raises. Namics' 1-gradient `periodic` (the repeat unit of a
+lamellar stack) is not yet ported and raises `NotImplementedError`; the same
+physics runs as `gradients : 2`, `geometry : flat` with
+`lowerbound_x/upperbound_x : periodic` and `n_layers_y : 1`. The N-D keys
+(`lowerbound_x`, ...) raise with `gradients : 1`, and `lowerbound`/`upperbound`
+raise with `gradients : 2/3`.
 
 ### Chain statistics (`Markov`)
 
@@ -298,10 +301,10 @@ cylindrical (r,z), 3D flat**. An unsupported geometry raises with the list of
 supported choices.
 
 **Per-axis boundaries** — `lowerbound_x/y/z` and `upperbound_x/y/z`, values
-`mirror`, `surface`, `periodic`. Defaults are role-aware: a full-2π azimuthal
-(`phi`) axis defaults to `periodic`, every other axis to `mirror`. Set only the
-axes you want to override (an unset axis keeps its role-aware default — do not
-force `mirror` on a full-2π seam).
+`mirror`, `surface`, `periodic` (anything else raises). Every axis defaults to
+`mirror`; set only the axes you want to override. `periodic` must be set on
+BOTH faces of an axis and is allowed only on a cartesian axis (one-sided or
+radial periodicity raises: the stencil would not conserve mass).
 
 **Box ranges** — frozen/pinned segment ranges on the N-D grid use the
 coordinate grammar `xlo,ylo[,zlo];xhi,yhi[,zhi]` (1-based interior indices per
@@ -363,8 +366,12 @@ interpreted at the `mon` level. Segment output properties (`phi`, `u`, moments,
   is masked to the range) but is still an iterated field. Requires
   `pinned_range`.
 
-A `frozen`/`pinned` segment without the matching range raises
-`freedom <f> requires a <f>_range`. Internal `state` blocks may not be attached
+Any other value raises (case matters; `Frozen` and `pined` get a
+did-you-mean), and Namics' `tagged`/`clamp` raise `NotImplementedError`. A
+`frozen`/`pinned` segment without the matching range raises
+`freedom <f> requires a <f>_range`, and a `free` segment with a range raises
+(in the first start, as in Namics; a later start may turn a mon free while its
+old range line stays in the accumulated settings). Internal `state` blocks may not be attached
 to a `frozen` mon (`states on frozen mons are not allowed … use a pinned mon
 instead`).
 
@@ -382,12 +389,20 @@ Set with `mon : NAME : frozen_range : …` (or `pinned_range`). One-gradient for
 | `lastlayer` / `last_layer` | the last interior layer |
 
 A frozen `lowerbound`/`upperbound` fills the corresponding ghost layer(s) to
-density 1 (the surface a `chi_NAME` affinity couples to). With refined lattices
+density 1 (the surface a `chi_NAME` affinity couples to). It **requires the
+lattice bound `surface` on that face** (`lat : ... : lowerbound : surface`;
+with a mirror bound the free species would fill the same ghost by reflection),
+only one segment may occupy a ghost face, only a `frozen` segment may sit
+there, and it may not be charged (`valence`/`e.psi0/kT`: the Poisson equation
+lives on the interior — put a charged wall or electrode on `1;1`). The
+coordinates `0` and `n_layers+1` are the ghost walls too (`0;0` = `lowerbound`,
+as in Namics); coordinates outside `0..n_layers+1` raise. With refined lattices
 (`FJC_choices > 3`, `fjc > 1`), physical layers are expanded to refined sites
 automatically: `lo;hi` maps to refined `[lo·fjc, (hi+1)·fjc − 1]`, matching
 Namics `segment.cpp`.
 
 ```
+lat : L  : lowerbound : surface
 mon : S  : freedom : frozen
 mon : S  : frozen_range : lowerbound
 mon : pg : freedom : pinned
@@ -404,7 +419,8 @@ xlo,ylo[,zlo] ; xhi,yhi[,zhi]
 Coordinates are 1-based interior indices per axis; each corner must list exactly
 `gradients` coordinates (`range '…' needs N coordinates per corner` otherwise). A
 single corner (no `;`) selects one cell. `lowerbound`/`upperbound` are also
-accepted and refer to the lower/upper face of the **first** axis. A box that is
+accepted and refer to the lower/upper face of the **first** axis (and need
+`lowerbound_x`/`upperbound_x : surface`, as in 1-D). A box that is
 one layer thick against a boundary **and spans the full face on every other axis**
 is treated as a solid wall face (its ghost hyperplane is filled). A *partial*
 boundary patch is deliberately kept as an interior box and is **not** promoted to
@@ -425,7 +441,14 @@ mon : A : chi - S  : -6
 
 The χ table is **symmetric** and defaults to 0: a value given on either partner
 (`mon : A : chi_S` or `mon : S : chi_A`) is used for both; if neither names the
-other, χ = 0. `X` may be another monomer, a frozen wall segment, or (when weak
+other, χ = 0. Given on both partners, the values must agree (else
+`ValueError`, as in Namics; also for state-level χ), and a self-χ
+(`mon : A : chi_A`) must be 0. A `var` scan of a χ also writes the partner's
+entry when the partner declares the pair, and starts from the partner's value
+when only the partner declares it. A χ that names a **multistate** mon from a
+state (or a state from a multistate mon's own block) is never used — such mons
+couple through their states only — and prints a warning; give it per state.
+`X` may be another monomer, a frozen wall segment, or (when weak
 charges are in play) a named internal **state** — a mon-level `chi` may name a
 state explicitly, and states inherit their parent mon's χ unless overridden.
 
@@ -437,6 +460,12 @@ state explicitly, and states inherit their parent mon's χ unless overridden.
 | `epsilon` | real | `80` | relative permittivity of this segment (water-like default) |
 | `e.psi0/kT` | real | — | fixed dimensionless surface potential (electrode); requires `freedom : frozen` |
 
+- Without a `neutralizer` the declared bulk must be electroneutral
+  (|Σ charge·φ<sub>b</sub>| ≤ 1e-4 over the free molecules and the solvent) and
+  no unpinned `restricted` molecule may be charged, else `ValueError` naming
+  `freedom : neutralizer` (Namics' rule). A converged state whose bulk needs a
+  **negative** neutralizer fraction raises too (pick a neutralizer of the
+  opposite charge, or add salt).
 - A system is treated as **charged** if any segment (or any of its states) has a
   nonzero `valence`, or any segment sets `e.psi0/kT`. Charged systems require
   `gradients : 1` (`charged systems (valence / e.psi0/kT) need gradients : 1`)
@@ -461,7 +490,7 @@ mon : Na : valence : 1
 mon : Cl : valence : -1
 mon : X  : epsilon : 40
 mon : E  : freedom : frozen
-mon : E  : frozen_range : lowerbound
+mon : E  : frozen_range : 1;1
 mon : E  : e.psi0/kT : 0.5
 ```
 
@@ -490,9 +519,9 @@ an unknown monomer raises `mol <name>: unknown mon '<mon>'`.
 | keyword | values | default | meaning |
 |---|---|---|---|
 | `composition` | architecture string (see below) | — (required) | chain sequence/topology |
-| `freedom` | `free`, `restricted`, `solvent`, `neutralizer` | `free` | how the amount is fixed (see below) |
-| `phibulk` | real ≥ 0 | `0.0` | bulk volume fraction (used by `free`) |
-| `theta` | real ≥ 0 | `n * N` | total amount ∑<sub>z</sub>L(z)φ(z) (used by `restricted`) |
+| `freedom` | `free`, `restricted`, `solvent`, `neutralizer` | — (required) | how the amount is fixed (see below) |
+| `phibulk` | real ≥ 0 | — (required for `free`) | bulk volume fraction (used by `free`) |
+| `theta` | real ≥ 0 | `n * N` (`restricted` needs `theta` or `n`) | total amount ∑<sub>z</sub>L(z)φ(z) (used by `restricted`) |
 | `n` | real ≥ 0 | `0.0` | number of chains; only sets the `theta` default (`theta = n·N`) |
 | `ring` | `true`/`false` | `false` | ring topology — **raises** `NotImplementedError` if true |
 
@@ -523,7 +552,12 @@ Details and gotchas:
   neutralizer`.
 - `n` is only a convenience: it sets the `theta` default via `theta = n·N`. If
   both `theta` and `n` are given, `theta` wins (override semantics).
-- Any other `freedom` value raises `mol <name>: freedom '<value>' not supported`.
+- A missing `freedom`, a `free` molecule without `phibulk` and a `restricted`
+  one without `theta`/`n` raise (they used to run as an empty molecule; Namics
+  refuses them too). An explicit `theta : 0` / `phibulk : 0` stays the way to
+  switch a molecule off.
+- Any other `freedom` value raises (`range_restricted`, `fill_range`,
+  `clamped`, `tagged`, `gradient`: `NotImplementedError`, not yet ported).
 
 ### Composition — linear multiblock
 
@@ -1338,9 +1372,12 @@ tolerated):
 | `upperbound` | the upper ghost layer (frozen wall at the high end) |
 | `firstlayer` (or `first_layer`) | interior layer 1 |
 | `lastlayer` (or `last_layer`) | interior layer MX |
-| `lo;hi` | interior layers `lo` through `hi`, inclusive |
+| `lo;hi` | interior layers `lo` through `hi`, inclusive (`0` and `n_layers+1` are the ghost walls; anything outside `0..n_layers+1` raises) |
+
+A ghost-layer wall needs the `surface` bound on its face (see `mon`).
 
 ```
+lat : L  : lowerbound : surface
 mon : S  : freedom : frozen
 mon : S  : frozen_range : lowerbound
 mon : pp : freedom : pinned
@@ -1350,7 +1387,8 @@ mon : pp : pinned_range : 5;5
 **2D/3D box grammar** (`latticend.py:parse_range`; available for whichever
 geometries the N-D lattice supports — cross-ref `lat`/`mon`):
 
-- `lowerbound` / `upperbound` — a wall on the first axis' low/high face.
+- `lowerbound` / `upperbound` — a wall on the first axis' low/high face (needs
+  the `surface` bound on that face).
 - `xlo,ylo[,zlo];xhi,yhi[,zhi]` — an inclusive box in 1-based per-axis interior
   coordinates. Each corner must supply `gradients` coordinates (else it raises);
   omitting the second corner (`;xhi,…`) selects a single layer.

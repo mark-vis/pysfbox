@@ -177,7 +177,7 @@ Full-Namics features that this release does not implement raise a clear
 `NotImplementedError` naming the feature, rather than silently producing
 wrong numbers — so an input either runs correctly or tells you exactly what
 it needs. Currently outside scope: ring and asymmetric-dendrimer
-architectures, initial-guess files, and mesodyn/cleng/teng calculations.
+architectures, initial-guess files, and mesodyn/cleng/teng/micro/bate calculations.
 
 The **one-gradient** path (planar / cylindrical / spherical, including
 `FJC_choices` refinement) covers the full feature set above. The **two- and

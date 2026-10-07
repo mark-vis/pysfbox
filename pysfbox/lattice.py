@@ -27,6 +27,21 @@ class Lattice1D:
             geometry = "planar"
         self.geometry = geometry
         self.lattice_type = lattice_type
+        for side, b in (("lowerbound", lowerbound),
+                        ("upperbound", upperbound)):
+            # every value other than 'surface' used to run as mirror -- a
+            # typo silently, and Namics' 1-D 'periodic' (the lamellar
+            # repeat unit) as a reflecting wall (review 6 Oct 2026, #30)
+            if b == "periodic":
+                raise NotImplementedError(
+                    f"lat : {side} : periodic is not yet ported to PySFBox "
+                    "on the 1-gradient lattice; use the C++ Namics, or "
+                    "gradients : 2 (flat) with lowerbound_x/upperbound_x : "
+                    "periodic and n_layers_y : 1")
+            if b not in ("mirror", "surface"):
+                raise ValueError(
+                    f"lat : {side} : '{b}' not recognized (mirror or "
+                    "surface)")
         self.lowerbound, self.upperbound = lowerbound, upperbound
         # chain-stiffness defaults (Namics reads Markov/k_stiff at both lat
         # and mol level; System fills these from the lat block and each

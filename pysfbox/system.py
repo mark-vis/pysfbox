@@ -11,6 +11,8 @@ masked to free lattice sites. The incompressibility field alpha is the mean
 over components, eliminated analytically inside the residual.
 """
 
+import re
+
 import numpy as np
 
 from .inputreader import get_blocks, last, substitute_aliases
@@ -95,8 +97,10 @@ class System:
         # Namics calculation types beyond equilibrium SCF: refuse loudly.
         # Silently ignoring a `mesodyn` block would run the input as a plain
         # SCF calculation and produce equilibrium numbers where dynamics were
-        # asked for -- never silently wrong.
-        for block in ("mesodyn", "cleng", "teng"):
+        # asked for -- never silently wrong. (micro = microemulsion, bate =
+        # balanced tensionless: both run an outer Doit() loop toward a
+        # tensionless state -- review 6 Oct 2026, #46)
+        for block in ("mesodyn", "cleng", "teng", "micro", "bate"):
             if get_blocks(settings, block):
                 raise NotImplementedError(
                     f"'{block}' calculations are not supported in PySFBox "
@@ -119,6 +123,28 @@ class System:
             raise NotImplementedError(
                 "lat : k_stiff (chain stiffness, part of Markov : 2 "
                 "semiflexibility) is not supported in PySFBox")
+        # bound keys of the other dimensionality used to be ignored
+        # silently (Namics refuses them; review 6 Oct 2026, #30)
+        wrong = ([k for k in lp if re.fullmatch(r"(lower|upper)bound_[xyz]",
+                                                k)]
+                 if gradients == 1 else
+                 [k for k in lp if k in ("lowerbound", "upperbound")]
+                 + [k for k in lp if gradients == 2
+                    and k in ("lowerbound_z", "upperbound_z")])
+        if wrong:
+            raise ValueError(
+                f"lat : {wrong[0]} does not apply with gradients : "
+                f"{gradients} (1 gradient: lowerbound/upperbound; 2 or 3: "
+                "lowerbound_x, upperbound_y, ...)")
+        if last(lp, "lambda") is not None and (
+                gradients > 1 or int(float(last(lp, "FJC_choices", 3))) > 3):
+            # only the fjc = 1 three-point stencil has a lambda to override;
+            # the refined FJC weights and the N-D finite-volume stencil
+            # ignored it silently (review 6 Oct 2026, #31)
+            raise NotImplementedError(
+                "lat : lambda (a custom step weight) is supported on the "
+                "1-gradient lattice with FJC_choices 3 only (the refined "
+                "and N-D stencils have no lambda to replace); drop the line")
         if gradients == 1:
             # FJC_choices = 3 + 2*i -> fjc = (FJC-1)/2 sub-layers/bond (Namics)
             FJC = int(float(last(lp, "FJC_choices", 3)))
@@ -247,6 +273,23 @@ class System:
         # ---- masks ---------------------------------------------------------
         self.frozen = [s for s in self.segments.values()
                        if s.freedom == "frozen"]
+        # one ghost wall per face: two would fill the same ghost layer
+        # twice (contact density 2; Namics: "Overpopulated 'surface'",
+        # system.cpp:1227-1232)
+        faces = {}
+        for s in self.frozen:
+            if s.in_ghost:
+                for face in ((s.surface_face,) if lat.gradients > 1 else
+                             [f for f, on in (("lower", s.on_lower_surface),
+                                              ("upper", s.on_upper_surface))
+                              if on]):
+                    faces.setdefault(face, []).append(s.name)
+        for face, names in faces.items():
+            if len(names) > 1:
+                raise ValueError(
+                    f"frozen walls {names} all sit in the same boundary "
+                    f"(ghost) layer {face}; only one segment may occupy a "
+                    "surface (Namics: 'Overpopulated surface')")
         interior = lat.interior.astype(float)
         solid = sum((s.range_mask for s in self.frozen), np.zeros(lat.M))
         self.ksam = interior * (1.0 - np.minimum(solid, 1.0))  # free sites
@@ -289,6 +332,7 @@ class System:
                 self.partners.extend(_Species(s, st) for st in s.states)
             else:
                 self.partners.append(_Species(s))
+        self._check_chi_table()
         # per-segment site mask for the single-segment weights
         self.gmask = {}
         for s in self.it_segs:
@@ -376,6 +420,33 @@ class System:
             if len(neut) > 1:
                 raise ValueError("at most one mol with freedom : neutralizer")
             self.neutralizer = neut[0] if neut else None
+            if self.neutralizer is None:
+                # psi = 0 is the bulk reference only for an electroneutral
+                # bulk. Without a neutralizer nothing enforces that: a
+                # non-neutral declared bulk relaxes to a different (Donnan)
+                # reservoir while theta_exc/Omega/mu still refer to the
+                # declared one, and a floating charged restricted molecule
+                # has a field-dependent implied bulk charge (review 6 Oct
+                # 2026, #6; Namics' rule, system.cpp:705-730)
+                floating = [m.name for m in self.molecules.values()
+                            if m.freedom == "restricted" and not m.has_pinned
+                            and any(sg.valence != 0.0
+                                    or any(st.valence != 0.0
+                                           for st in sg.states)
+                                    for sg in m.seq)]
+                net = sum(m.phibulk * m.charge_per_seg()
+                          for m in self.molecules.values()
+                          if m.freedom in ("free", "solvent"))
+                if floating or abs(net) > 1e-4:
+                    why = (f"the restricted molecule(s) {floating} are "
+                           "charged and not pinned" if floating else
+                           f"the declared bulk carries net charge {net:.3g} "
+                           "per site")
+                    raise ValueError(
+                        f"a neutralizer is needed: {why}. Declare one charged "
+                        "molecule (e.g. a counter-ion) with freedom : "
+                        "neutralizer -- its bulk fraction is then set by "
+                        "electroneutrality (as in Namics)")
             self.psi = np.zeros(lat.M)
             self.q = np.zeros(lat.M)
             self.EE = np.zeros(lat.M)
@@ -496,6 +567,15 @@ class System:
         # contribute their implied bulk density, which depends on GN)
         self.phibulk_seg = {name: 0.0 for name in self.segments}
         self._update_bulk()
+        if self.neutralizer is not None and not any(
+                m.freedom == "restricted" and not m.has_pinned
+                for m in self.molecules.values()):
+            # every bulk fraction is declared: the neutralizer's sign is
+            # known now -- refuse before solving rather than after
+            try:
+                self._check_bulk_signs()
+            except RuntimeError as e:
+                raise ValueError(str(e)) from None
         self.alpha = np.zeros(lat.M)
         self.iterations = 0
         self.residual_norm = np.inf
@@ -575,6 +655,67 @@ class System:
             # carries the full M block with g=0 dead entries instead)
             m = np.concatenate([m, self.delta_mask > 0])
         return m
+
+    def _check_chi_table(self):
+        """Validate the chi table once per build (review 6 Oct 2026, #7/#61).
+        chi is a SYMMETRIC exchange parameter; a pair given on both
+        partners with different values used to run with the caller's own
+        entry on each side -- an asymmetric table whose F, Omega and mu no
+        longer belong to one functional (Namics refuses it,
+        system.cpp:1778-1792). A value given on one side only, or equally
+        on both, is fine. A chi that names a MULTISTATE mon from a state
+        (or a state from a multistate mon's own block) is never used --
+        multistate mons couple through their states only, in Namics as
+        here -- so it gets a warning naming the per-state alternative."""
+        segs = list(self.segments.values())
+        for i, X in enumerate(segs):
+            for Y in segs[i + 1:]:
+                a, b = X.chi.get(Y.name), Y.chi.get(X.name)
+                if a is not None and b is not None and a != b:
+                    raise ValueError(
+                        f"mon {X.name} : chi_{Y.name} : {a:g} and mon "
+                        f"{Y.name} : chi_{X.name} : {b:g} disagree -- chi "
+                        "is symmetric; give it once (or equally on both)")
+        sp = self.partners
+        for i, a in enumerate(sp):
+            for b in sp[i + 1:]:
+                if a.state is None and b.state is None:
+                    continue                   # the mon-level check above
+                given = []
+                if a.state is not None and b.name in a.state.chi:
+                    given.append((f"state {a.name}", b.name,
+                                  a.state.chi[b.name]))
+                if b.state is not None and a.name in b.state.chi:
+                    given.append((f"state {b.name}", a.name,
+                                  b.state.chi[a.name]))
+                if a.state is None and b.name in a.seg.chi:
+                    given.append((f"mon {a.name}", b.name, a.seg.chi[b.name]))
+                if b.state is None and a.name in b.seg.chi:
+                    given.append((f"mon {b.name}", a.name, b.seg.chi[a.name]))
+                if len({v for _, _, v in given}) > 1:
+                    raise ValueError(
+                        "conflicting chi values for one pair: "
+                        + "; ".join(f"{who} : chi_{p} : {v:g}"
+                                    for who, p, v in given)
+                        + " -- chi is symmetric; give it once")
+        multistate = {s.name for s in segs if s.states}
+        state_names = {st.name for s in segs for st in s.states}
+        unused = []
+        for s in segs:
+            for st in s.states:
+                unused += [f"state {st.name} : chi_{k}" for k in st.chi
+                           if k in multistate]
+            if s.states:
+                unused += [f"mon {s.name} : chi_{k}" for k in s.chi
+                           if k in state_names]
+        for u in unused:
+            note = (f"{u} is never used: a multistate mon couples only "
+                    "through its states (as in Namics) -- give the chi per "
+                    "state instead")
+            self.warnings.append(note)
+            if note not in _WARN_NOTES:            # once per process
+                _WARN_NOTES.add(note)
+                print(f"  warning: {note}")
 
     def _update_bulk(self):
         """Bulk composition, refreshed every iteration exactly like Namics
@@ -1566,18 +1707,35 @@ class System:
         self.residual(x)
         self.iterations, self.residual_norm = it, err
         self._last_u = self.unpack(x)
-        if ok and self.solvent.phibulk < 0:
+        if ok:
+            self._check_bulk_signs()
+        if not ok:
+            raise RuntimeError(
+                f"no convergence in {it} iterations (max|g| = {err:.2e}); "
+                f"try a smaller deltamax")
+        return x, it, err
+
+    def _check_bulk_signs(self):
+        """Refuse a converged state whose bulk needs a NEGATIVE amount of
+        the solvent or the neutralizer -- the two fractions _update_bulk
+        sets by closure. A negative neutralizer gets zero density
+        (lnC = -inf) while the electroneutrality bookkeeping still counts
+        it, so the far field silently drifts to a different reservoir
+        (review 6 Oct 2026, #29; Namics warns, system.cpp:2582)."""
+        if self.solvent.phibulk < 0:
             # cf. Namics' refusal (system.cpp:2604): the constrained amounts
             # imply more material than an equilibrium bulk can hold
             raise RuntimeError(
                 f"converged to a state with negative solvent bulk fraction "
                 f"({self.solvent.phibulk:.3e}); the restricted theta values "
                 f"exceed what the box can hold in equilibrium")
-        if not ok:
+        nm = self.neutralizer
+        if nm is not None and nm.phibulk < -1e-12:
             raise RuntimeError(
-                f"no convergence in {it} iterations (max|g| = {err:.2e}); "
-                f"try a smaller deltamax")
-        return x, it, err
+                f"the bulk needs a NEGATIVE amount of the neutralizer "
+                f"{nm.name} (phibulk {nm.phibulk:.3e}): the other bulk "
+                "charges already carry its sign. Choose a neutralizer of "
+                "the opposite charge, or add salt")
 
     def _solve_anderson(self, x0, tolerance, iterationlimit, deltamax,
                         m_anderson, warmup, verbose):

@@ -134,7 +134,7 @@ def _var_roles(settings):
                 # a mu target naming another molecule (mol-Y) is Namics'
                 # 'eq_to_mu' equilibration -- not supported; name it clearly
                 # rather than let float('mol-Y') throw a bare ValueError
-                if prop == "mu" and not _num(tv):
+                if prop == "mu" and _num(tv) is None:
                     raise NotImplementedError(
                         f"var target '{prop} : {tv}': equating a molecule's "
                         "mu to another molecule (eq_to_mu), and the "
@@ -181,6 +181,53 @@ def _super_options(settings):
                                                                   30)}
 
 
+def _check_first_start(settings):
+    """Checks Namics makes on the FIRST start only (settings accumulate, so
+    a later start may legitimately turn a frozen/pinned mon free while its
+    old range line stays in the settings): a mon declared free together
+    with a range is a contradiction -- the range was silently dropped
+    (review 6 Oct 2026, #25; Namics segment.cpp:1077-1083)."""
+    for name, params in get_blocks(settings, "mon"):
+        if str(last(params, "freedom", "free")).strip() != "free":
+            continue
+        rng = [k for k in ("frozen_range", "pinned_range") if k in params]
+        if rng:
+            raise ValueError(
+                f"mon {name}: freedom : free cannot be combined with "
+                f"'{rng[0]}' (a free segment has no range) -- set freedom "
+                f"to {rng[0].split('_')[0]}, or drop the range line")
+
+
+def _chi_partner_params(settings, key, name, prop):
+    """For a scanned chi (`var : mon-A : scan : chi_W`, also on a state
+    block): the (param, block) entries on the PARTNER's mon/state block that
+    name this one back (chi_A / chi-A / 'chi - A'). Empty for any other
+    property."""
+    pk = prop.replace(" ", "")
+    if key not in ("mon", "state") or not pk.startswith(("chi_", "chi-")):
+        return []
+    partner = pk[4:]
+    out = []
+    for pkey in ("mon", "state"):
+        pp = settings.get((pkey, partner))
+        if pp is None:
+            continue
+        out += [(p, pp) for p in pp
+                if p.replace(" ", "") in (f"chi_{name}", f"chi-{name}")]
+    return out
+
+
+def _set_scan_value(settings, key, name, prop, v):
+    """Write one scan value into the settings. A chi is SYMMETRIC: when the
+    partner block also carries the pair (`mon : W : chi_A` while scanning
+    `mon-A : chi_W`), its entry is written too, so every step builds a
+    symmetric table (review 6 Oct 2026, #7; System refuses a conflicting
+    pair)."""
+    for p, pp in _chi_partner_params(settings, key, name, prop):
+        pp[p] = [str(v)]
+    set_value(settings, key, name, prop, v)
+
+
 def _var_plan(settings):
     """The scan schedule, if a `var` scan block is present:
     (key, name, prop, values). Ignores search/target blocks."""
@@ -198,7 +245,13 @@ def _var_plan(settings):
         cur = float(last(settings[("alias", prop[:-6])], "value"))
         key, name, prop = "alias", prop[:-6], "value"
     else:
-        cur = float(last(settings.get((key, name), {}), prop, 0))
+        cur = last(settings.get((key, name), {}), prop)
+        if cur is None:
+            # a chi given on the PARTNER's block is this pair's value too
+            # (the table is symmetric): start the scan there, not at 0
+            cur = next((last(pp, p) for p, pp in _chi_partner_params(
+                settings, key, name, prop)), 0)
+        cur = float(cur)
     if last(params, "scale", "").strip().lower() == "exponential":
         # Namics exponential scans (e.g. state alphabulk titrations,
         # state.cpp:268-304): 'steps' means steps PER DECADE, and the
@@ -456,6 +509,7 @@ def run_file(path, verbose=True):
     """Run all calculations in a Namics input file; writes .kal/.pro next
     to the input file. Returns the last System (for interactive use)."""
     calculations = read_input(path)
+    _check_first_start(calculations[0])
     base = os.path.splitext(path)[0]
     kal_started = False
     system = None
@@ -504,7 +558,7 @@ def run_file(path, verbose=True):
             if has_var:
                 key, name, prop, _ = plan
                 v = int(value) if float(value).is_integer() else value
-                set_value(settings, key, name, prop, v)
+                _set_scan_value(settings, key, name, prop, v)
                 tag = f" [{key}:{name}:{prop} = {v}]"
             else:
                 tag = ""
