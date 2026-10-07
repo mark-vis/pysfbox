@@ -1200,7 +1200,11 @@ class System:
         lat = self.lat
         omega = np.zeros(lat.M)
         for m in self.molecules.values():
-            omega -= (m.phi - m.phibulk) / m.N
+            # translational term -(phi/N - phibulk/N): the chain number
+            # density minus its bulk value, in the same floating-point
+            # order as the development tree, so the two trees' outputs
+            # stay byte-identical
+            omega -= m.phi / m.N - m.phibulk / m.N
         omega -= self.alpha
         # chi pairs at species level: stateless mons + states (state chi
         # inheritance/overrides via _species_chi; state-resolved phi/side/
