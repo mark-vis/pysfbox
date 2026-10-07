@@ -22,7 +22,11 @@ the Namics set (LGrad2/LGrad3):
     2D  flat/planar   [x, x]          cylindrical [r, z]
     3D  flat/planar   [x, x, x]
 
-simple_cubic, fjc = 1, first-order Markov.
+simple_cubic, fjc = 1, first-order Markov. The 2-D simple-cubic stencil is
+the 5-point finite-volume one (stay 1/3, faces 1/6) = the z-uniform reduction
+of the 3-D 7-point lattice; Namics' 2-D DEFAULT is a 9-point product stencil
+(`stencil_full : true`; LGrad2 has no other), which PySFBox matches only with
+`stencil_full : false` on the Namics side (2-D flat).
 
 Profiles are FLAT arrays of length `M = prod(n_a + 2)` in C order over the
 padded grid (one ghost layer per side per axis), so `System`'s residual and

@@ -214,7 +214,7 @@ lat : L : n_layers : 100
 | `lambda` | real in (0, ½) | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). Honoured on the 1-gradient lattice at `FJC_choices 3` only; with `FJC_choices > 3` or `gradients > 1` (whose stencils have no λ to replace) it raises. |
 | `n_layers` | integer | *(required, 1D)* | number of physical layers z = 1..n_layers (see FJC refinement). Missing raises. |
 | `FJC_choices` | `3`, `5`, `7`, … | `3` | lattice refinement (freely-jointed-chain sub-layers). `3` = unrefined (fjc = 1). |
-| `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. |
+| `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries; **ignored on planar lattices**, as in Namics — it no longer shifts the planar `.pro` x column), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. With a `mirror` lowerbound the inner mirror at r = offset folds the refined inward bonds symmetrically (since 7 Oct 2026; before, they broke detailed balance: θ of a restricted brush missed its input and GN/μ/F depended on the chain orientation). |
 | `bondlength` | float in 1e-12..1e-8 (m) | `5e-10` | segment bond length; **only consumed by charged systems** (Poisson prefactor). Out-of-range raises. |
 | `Markov` | `1` | `1` | chain statistics: `1` = fully flexible. |
 
@@ -320,10 +320,19 @@ a radial axis from its axis/centre. An innermost angular arc shorter than one
 bond gives a negative stay-weight and raises — offset the domain from the axis
 or use fewer angular cells.
 
-`LatticeND` reduces bit-for-bit to `Lattice1D` when the extra axes are uniform;
-the flat/cylindrical N-D field solve is oracle-validated against Namics
-(LG2Planar / LGrad3), the angular/curved N-D geometries by dimensional
-reduction and the continuum Laplacian.
+`LatticeND` reduces bit-for-bit to `Lattice1D` when the extra axes are uniform.
+The 2-D simple-cubic site average is the **5-point** finite-volume stencil
+(stay 1/3, each face neighbour 1/6) -- the exact z-uniform reduction of the 3-D
+7-point lattice. This is NOT Namics' 2-D default: Namics' 2-D flat lattice
+defaults to `stencil_full : true`, a 9-point product stencil (16:4:1)/36, and
+its 2-D cylindrical lattice (LGrad2) has only that 9-point form; the two agree
+only for fields uniform along one axis (genuinely 2-D profiles differ at the
+percent level, e.g. GN 0.5304 vs 0.5178). The 2-D flat solve matches the
+compiled Namics run with `lat : X : stencil_full : false` to machine
+precision; the 3-D flat solve matches Namics' default (LGrad3). 2-D cylindrical
+is validated by reduction only. `lat : X : stencil_full : false` is accepted
+(it names the PySFBox stencil); an explicit `true` raises on 2-D lattices; 3-D
+ignores the keyword, like Namics.
 
 ### Notes
 
@@ -884,7 +893,7 @@ sys : NN : initial_guess : polymer_adsorption
 | `constraint` | `delta` | (off) | pin an interface — see the delta-constraint subsection below |
 | `delta_range` | `(z)` or `(z1);(z2);...` | — | the pinned site(s), required with `constraint : delta` |
 | `delta_molecules` | `A;B` | — | the two molecules whose local ratio is pinned |
-| `phi_ratio` | positive real or `critical_ratio` | — | target ratio r; `critical_ratio` = √(N_A/N_B) |
+| `phi_ratio` | positive real or `critical_ratio` | — | target ratio r; `critical_ratio` = √(N_B/N_A), the Flory–Huggins critical composition φ_A/φ_B of the pair (Namics uses √(N_A/N_B), the inverse — deliberate deviation since 7 Oct 2026) |
 | `delta_range_units` | `bondlength` / `gritsize` | — | required at `FJC_choices > 3`: `delta_range` in layers (×fjc) or refined sub-layers |
 
 **`initial_guess`.** Applied only to the first calculation of a run (exactly
@@ -1101,7 +1110,8 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 
 | key | prop | type | meaning |
 |---|---|---|---|
-| `lat` | `n_layers` | int | number of interior layers (1-D `MX`, or ∏ dims for N-D) |
+| `lat` | `n_layers` | int | the input layer count (`n_layers`, or `n_layers_x` on N-D) — not the refined count at `FJC_choices` > 3, like Namics |
+| `lat` | `n_layers_x`/`_y`/`_z` | int | the input layer count along that axis (N-D) |
 | `lat` | `volume` | real | total lattice volume (Σ site volumes) |
 | `sys` | `grand_potential` | real | grand potential Ω (per unit area / normalised as in Namics) |
 | `sys` | `Laplace_pressure` | real | −Ω-density in the first interior layer (1-gradient; the inside/outside pressure difference of a pinned droplet/micelle; per-site Ω split follows Namics' symmetric χ booking) |
@@ -1118,7 +1128,7 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 | `mol` | `mu-<state>` | real | per-state μ = μ + ln(α_bulk,state), for chain-length-1 molecules only |
 | `mol` | `n` | real | number of molecules θ/N |
 | `mol` | `N`, `chainlength` | int | chain length (segments) |
-| `mol` | `GN` | real | single-chain partition function G_N |
+| `mol` | `GN` | real | single-chain partition function G_N (exact up to the double range; `inf` with a warning beyond it — μ and θ use ln G_N and stay exact) |
 | `mol` | `phiMax` | real | max φ over interior layers |
 | `mol` | `phiMin` | real | min φ over interior layers |
 | `mol` | `phiM` | real | φ at the last interior layer (the bulk/reservoir side) — the Namics `phiM`, **not** the maximum |
@@ -1128,7 +1138,7 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 | `mon` | `chi_<X>`, `chi-<X>` | real | Flory χ between this monomer and monomer `X` |
 | `mon` | `1st_M_phi_z` | real | first moment ⟨z⟩ of the excess profile (M₁/θ_exc) |
 | `mon` | `2nd_M_phi_z` | real | second moment M₂/θ_exc |
-| `mon` | `RMS` | real | √(second moment) |
+| `mon` | `RMS` | real | √(second moment); `nan` when the second moment is negative (as Namics) |
 | `mon` | `fluctuations` | real | √(M₂/θ_exc − ⟨z⟩²) |
 | `mon` | `alphabulk_<state>` | real | per-state bulk fraction, pushed on the parent monomer |
 | `mon` | `valence_<state>` | real | per-state valence |
@@ -1159,7 +1169,9 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 `write_bounds : true`, potentials/intensive fields (`psi`, `u`, `alpha`,
 `u-`, `alpha-`) get mirror-filled ghosts; densities (`phi`, `q`) get
 surface-zero or mirror ghosts, with a frozen wall segment overriding its
-ghost to the wall density.
+ghost to the wall density. The integrand densities (`free_energy_density`,
+`grand_potential_density`) keep zero ghosts, as Namics writes them, so the
+written column sums to F/Ω.
 
 ### What the output means
 
@@ -1196,7 +1208,9 @@ ghost to the wall density.
   of the *excess* profile measured from the first layer, normalised by
   θ_exc: `1st_M_phi_z` is the mean position ⟨z⟩ (brush/layer height proxy),
   `2nd_M_phi_z` the mean-square position, `RMS = √M₂`, and `fluctuations` the
-  standard deviation √(⟨z²⟩ − ⟨z⟩²) (layer width). All four are in bond-length
+  standard deviation √(⟨z²⟩ − ⟨z⟩²) (layer width). When θ_exc is round-off
+  (relative 1e-10, e.g. a uniform state) all four print `nan` instead of a
+  meaningless 0/0 ratio (Namics prints the ratio). All four are in bond-length
   units and independent of lattice refinement (`FJC_choices`) — fixed
   20 Aug 2026, when a double division by fjc made them fjc times too small on
   refined lattices. On refined lattices the second moment (and hence RMS and

@@ -1,0 +1,56 @@
+// Refined curved lattice x offset x MIRROR lower bound (review 7 Oct 2026,
+// finding #9): a brush grafted at r = offset + 1 on a cylindrical domain
+// whose inner boundary r = 3 is a MIRROR, at FJC_choices 5. The inward
+// refined bonds that land in the fjc-deep lower ghost band are folded with
+// a (site, image)-symmetric area, the inner twin of the outer-mirror fold;
+// before the fix they used the unfolded area, which broke detailed balance:
+// theta came out 59.94 instead of 60 and GN/mu/F depended on the chain
+// orientation ((P)1(A)29 vs (A)29(P)1: mu -12.9995 vs -12.9589). The two
+// starts below are the SAME molecule written in opposite directions, so the
+// two kal rows must agree to the solver floor (and theta = 60 exactly).
+// Also guards: kal lat n_layers reports the INPUT count (20), not the
+// refined one (40) (#63); write_bounds keeps ZERO ghost rows on the
+// integrand density columns, as Namics writes them (#76).
+// No direct oracle: Namics shares the axis test (LGrad1.cpp) and places
+// its refined shells at fjc x the offset (reported upstream), so the validation is
+// the orientation identity + theta closure, plus the L-symmetry of the
+// transfer operator (1e-16, checked when the fold landed).
+lat : NN : n_layers : 20
+lat : NN : geometry : cylindrical
+lat : NN : lattice_type : simple_cubic
+lat : NN : offset_first_layer : 3
+lat : NN : FJC_choices : 5
+lat : NN : lattice_type : hexagonal
+
+mon : P : freedom : pinned
+mon : P : pinned_range : 1;1
+mon : A : freedom : free
+mon : A : chi_W : 0.4
+mon : W : freedom : free
+
+mol : pol : composition : (P)1(A)29
+mol : pol : freedom : restricted
+mol : pol : theta : 60
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : NN : tolerance : 1e-10
+
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : GN
+kal : mol : pol : mu
+kal : mon : A : 1st_M_phi_z
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+kal : lat : NN : n_layers
+
+output : pro : append : false
+output : pro : write_bounds : true
+pro : mol : pol : phi
+pro : sys : NN : grand_potential_density
+start
+
+mol : pol : composition : (A)29(P)1
+start

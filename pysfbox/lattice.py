@@ -50,6 +50,11 @@ class Lattice1D:
         self.k_stiff = 0.0
         self.fjc = int(fjc)
         self.FJC = 2 * self.fjc + 1
+        # the radial offset is a curved-lattice notion: Namics reads it only
+        # for non-planar geometry (lattice.cpp:377-385), so a planar offset
+        # is ignored rather than shifting the .pro x column (review #70)
+        if geometry == "planar":
+            offset_first_layer = 0.0
         self.offset = float(offset_first_layer)
         self.MX = self.fjc * int(n_layers)          # internal (refined) sites
         self.M = self.MX + 2 * self.fjc             # incl. fjc ghosts each side
@@ -114,6 +119,18 @@ class Lattice1D:
         else:                              # cylinder: middle area doubled, area=r
             area = lambda rr: rr
             c_ext, c_mid = 1.0 / (FJC - 1), 2.0 / (FJC - 1)
+        # an INNER mirror at r = off (offset > 0, lowerbound mirror): inward
+        # channels landing in the fjc-deep lower ghost band read a mirror
+        # image, so they must be folded with an area that is symmetric in
+        # the (site, image) pair -- the mirror-plane area shifted half the
+        # bond projection into the domain, area(off + (r - rlow)), the
+        # inner twin of _reflect's area(off + edge - (rhigh - r)). The
+        # unfolded area(rlow) broke L-self-adjointness (L_i W(i->m) !=
+        # L_m W(m->i)): theta of a restricted brush missed its input and
+        # GN/mu/F depended on which chain end the composition starts from
+        # (review 7 Oct 2026, #9). Offset 0 (the axis: such channels are
+        # dropped) and a surface lowerbound (zero ghosts) are unchanged.
+        fold_lo = off > 0 and self.lowerbound != "surface"
         for i in range(fjc, M - fjc):
             r = off + (i - fjc + 1.0) / fjc
             rlow, rhigh = r - 0.5, r + 0.5
@@ -125,7 +142,9 @@ class Lattice1D:
                 VL = 2.0 * r
             edge = MX / fjc
             # outermost channels (bond endpoints)
-            if 2 * rlow - r > 0:
+            if fold_lo and i - fjc < fjc:          # lands in the lower ghosts
+                LAM[0, i] += c_ext * area(off + r - rlow) / VL
+            elif 2 * rlow - r > 0:
                 LAM[0, i] += c_ext * area(rlow) / VL
             # the outer mirror sits at r = off + edge: the offset must enter
             # both the test and the reflected distance (before 25 Sep 2026
@@ -142,7 +161,9 @@ class Lattice1D:
             for j in range(1, fjc):
                 rlow += 0.5 / fjc
                 rhigh -= 0.5 / fjc
-                if 2 * rlow - r > 0:
+                if fold_lo and i + j - fjc < fjc:  # lands in the lower ghosts
+                    LAM[j, i] += c_mid * area(off + r - rlow) / VL
+                elif 2 * rlow - r > 0:
                     LAM[j, i] += c_mid * area(rlow) / VL
                 if 2 * rhigh - r < off + edge:
                     LAM[FJC - 1 - j, i] += c_mid * area(rhigh) / VL

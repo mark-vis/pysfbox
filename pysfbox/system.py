@@ -552,10 +552,12 @@ class System:
                     "sys : constraint : delta needs 'phi_ratio' (typically "
                     "1, or the keyword 'critical_ratio')")
             if ratio == "critical_ratio":
-                # sqrt(N_A/N_B): the ratio of the two critical densities
-                # (Namics system.cpp:899-901)
+                # the FH critical composition of an A/B pair: phi_A/phi_B =
+                # sqrt(N_B/N_A) (f''' = 0). Namics (system.cpp:899-901) uses
+                # sqrt(N_A/N_B) -- the inverse; deliberate deviation (review
+                # 6 Oct 2026, #74)
                 molA, molB = self.delta_molecules
-                self.phi_ratio = float(np.sqrt(molA.N / molB.N))
+                self.phi_ratio = float(np.sqrt(molB.N / molA.N))
             else:
                 self.phi_ratio = float(ratio)
                 if self.phi_ratio <= 0:
@@ -602,6 +604,21 @@ class System:
 
         axes = ["x", "y"] + (["z"] if gradients == 3 else [])
         dims = tuple(nl(a) for a in axes)
+        # Namics' 2-D lattices default to `stencil_full : true`, a 9-point
+        # product stencil; PySFBox's 2-D stencil is the 5-point reduction of
+        # the 3-D 7-point lattice (= Namics' stencil_full : false). Accept
+        # `false` (or no line), refuse an explicit `true` rather than run a
+        # different stencil silently (review 7 Oct 2026, #49). LGrad3 has
+        # no stencil_full branch, so 3-D ignores the keyword like Namics.
+        sf = last(lp, "stencil_full")
+        if (gradients == 2 and sf is not None
+                and str(sf).strip().lower() not in ("false", "0", "no")):
+            raise NotImplementedError(
+                "lat : stencil_full : true (Namics' 9-point 2-D product "
+                "stencil) is not ported to PySFBox; PySFBox's 2-D lattice is "
+                "the 5-point stencil (Namics' stencil_full : false), the "
+                "exact reduction of the 3-D lattice. Remove the line or set "
+                "it to false.")
         # only override the lattice's own default for axes the user actually
         # set (else pass None -> LatticeND keeps its role-aware default, which
         # is PERIODIC for a full-2pi azimuthal axis; blanket 'mirror' here
@@ -1383,10 +1400,14 @@ class System:
                 fv = float(v)
                 return ("int", int(fv)) if fv == int(fv) else ("real", fv)
         if key == "lat":
-            if prop == "n_layers":
-                return "int", getattr(self.lat, "MX",
-                                      int(np.prod(getattr(self.lat, "dims",
-                                                          (0,)))))
+            # the INPUT layer counts, like Namics (MX/fjc, MY/fjc, ...):
+            # refined cells are an internal detail (review 7 Oct 2026, #63)
+            layers = (lat.dims if lat.gradients > 1
+                      else (lat.MX // lat.fjc,))
+            axis = {"n_layers": 0, "n_layers_x": 0, "n_layers_y": 1,
+                    "n_layers_z": 2}.get(prop)
+            if axis is not None and axis < len(layers):
+                return "int", int(layers[axis])
             if prop == "volume":
                 return "real", self.lat.volume
         if key == "sys":
@@ -1442,6 +1463,21 @@ class System:
                         return "real", (self.chemical_potential(m)
                                         + np.log(st.alphabulk))
             theta = m.get_theta()
+
+            def _gn():
+                # the propagators keep GN = exp(min(lnGN, 700)) (a display
+                # value; mu/theta use lnGN). Report the TRUE GN: exact up to
+                # the double range, inf beyond it (with a note) rather than
+                # a silently clamped exp(700) (review 7 Oct 2026, #77).
+                if m.lnGN < 700.0:
+                    return m.GN
+                if m.lnGN < 709.78:
+                    return float(np.exp(m.lnGN))
+                print(f"  warning: kal mol:{name}:GN overflows a double "
+                      f"(ln GN = {m.lnGN:.6g}); printing inf (mu and theta "
+                      "use ln GN and are exact)")
+                return float("inf")
+
             table = {"theta": m.get_theta, "theta_exc": m.get_theta_exc,
                      # Namics accepts both spellings (oracle-checked 21 Jul
                      # 2026: identical columns)
@@ -1451,7 +1487,7 @@ class System:
                      "MU": lambda: self.chemical_potential(m),
                      "mu": lambda: self.chemical_potential(m),
                      "n": lambda: theta / m.N,
-                     "N": lambda: m.N, "GN": lambda: m.GN,
+                     "N": lambda: m.N, "GN": _gn,
                      "chainlength": lambda: m.N,
                      "phiMax": lambda: float(m.phi[self.lat.interior].max()),
                      # Namics phiM = phitot[M-2*fjc]: phi at the last interior
@@ -1503,14 +1539,24 @@ class System:
             if prop == "phibulk":
                 return "real", phib
             if prop in ("1st_M_phi_z", "2nd_M_phi_z", "fluctuations", "RMS"):
-                m1 = lat.moment(s.phi, phib, 1) / theta_exc if theta_exc else 0
-                m2 = lat.moment(s.phi, phib, 2) / theta_exc if theta_exc else 0
+                # moments of the EXCESS profile, normalised by theta_exc.
+                # A uniform state has theta_exc = round-off and the ratio
+                # an O(box) number (Namics prints that garbage, dividing
+                # whenever theta_exc != 0 exactly); report nan instead
+                # when |theta_exc| is round-off relative to the amount.
+                # (review 7 Oct 2026, #62)
+                if abs(theta_exc) <= 1e-10 * max(theta, lat.L_sum * phib):
+                    return "real", float("nan")
+                m1 = lat.moment(s.phi, phib, 1) / theta_exc
+                m2 = lat.moment(s.phi, phib, 2) / theta_exc
                 if prop == "1st_M_phi_z":
                     return "real", m1
                 if prop == "2nd_M_phi_z":
                     return "real", m2
                 if prop == "RMS":
-                    return "real", np.sqrt(m2) if m2 > 0 else 0.0
+                    # M2 < 0 (an excess that changes sign): no real RMS;
+                    # Namics' pow(M2, 0.5) prints nan here too
+                    return "real", np.sqrt(m2) if m2 >= 0 else float("nan")
                 fl = m2 - m1 * m1
                 return "real", np.sqrt(fl) if fl > 0 else 0.0
         return None, None
@@ -1597,6 +1643,15 @@ class System:
         segment sitting on that surface overrides its ghost to the wall
         density (1.0), reproducing e.g. the frozen S wall in silica.in."""
         lat = self.lat
+        if key == "sys" and prop in ("free_energy_density",
+                                     "grand_potential_density"):
+            # INTEGRAND densities keep ZERO ghosts, as Namics writes them:
+            # they are summed over the interior only, and a mirror-filled
+            # ghost row made the written column no longer sum to Omega/F
+            # (review 7 Oct 2026, #76)
+            out = np.array(arr, dtype=float)
+            out[~lat.interior] = 0.0
+            return out
         if (prop in ("psi", "u", "alpha")
                 or prop.startswith("u-") or prop.startswith("alpha-")):
             return lat.set_mirror_bounds(arr)

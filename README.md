@@ -92,7 +92,7 @@ index terms) — each noted in the relevant section below.
 - **Delta constraint** (interface pinning): `sys : NN : constraint : delta`
   with `delta_molecules : A;B`, `delta_range : (z)` (multiple sites
   `(z1);(z2)`; at `FJC_choices > 3` add `delta_range_units : bondlength`
-  or `gritsize`) and `phi_ratio : r` (or `critical_ratio` = sqrt(N_A/N_B))
+  or `gritsize`) and `phi_ratio : r` (or `critical_ratio` = sqrt(N_B/N_A), the Flory-Huggins critical composition; Namics uses the inverse)
   pins the local composition at the listed layers: phi_A − phi_B is driven
   to (r−1)/(r+1) by a Lagrange-multiplier field beta(z) that enters the two
   molecules' propagators as ±beta. The classic use (cf. the Namics
