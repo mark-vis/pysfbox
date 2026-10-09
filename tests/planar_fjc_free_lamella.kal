@@ -1,0 +1,2 @@
+sys:NN:grand_potential	mol:poly:theta	mol:poly:mu	mol:poly:phibulk	lat:mylat:geometry	lat:mylat:lattice_type	lat:mylat:gradients	lat:mylat:FJC_choices
+6.4211451784265466e-04	8.3018999999999856e+00	-7.9310320249868340e+00	5.4175938909380874e-08	planar	hexagonal	1	5

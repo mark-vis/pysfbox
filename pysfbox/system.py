@@ -23,6 +23,28 @@ from .model import Molecule, Segment, U_CLIP
 from .reactions import Reaction, State, solve_bulk_alphas
 from .sfnewton import SFNewton
 
+# the last cascade stage (System._newton_polish) only starts from a stall
+# this close to a solution: a root finder started there stays on its branch
+POLISH_MAX_ERR = 1e-3
+
+
+def fd_jacobian(residual, x, g=None):
+    """Forward-difference Jacobian J[i, j] = d g_i / d x_j of a residual
+    function, one residual evaluation per column.  The step per column is
+    sqrt(eps_machine) * (1 + |x_j|), the JFNK JVP convention."""
+    x = np.asarray(x, dtype=float)
+    if g is None:
+        g = np.asarray(residual(x), dtype=float).ravel()
+    n = x.size
+    J = np.empty((g.size, n))
+    sq = np.sqrt(np.finfo(float).eps)
+    for j in range(n):
+        h = sq * (1.0 + abs(x[j]))
+        xp = x.copy()
+        xp[j] += h
+        J[:, j] = (np.asarray(residual(xp), dtype=float).ravel() - g) / h
+    return J
+
 
 # warnings already printed this process (avoid per-scan-step spam)
 _WARN_NOTES = set()
@@ -456,6 +478,7 @@ class System:
             if s.freedom == "pinned":
                 mask = mask * s.range_mask
             self.gmask[s.name] = mask
+        self._check_pinned_room()
 
         # ---- electrostatics (cf. Namics system.cpp/LG1Planar.cpp) ---------
         # charged mode: any nonzero valence or a fixed surface potential.
@@ -807,6 +830,39 @@ class System:
     def unpack(self, x):
         S = len(self.it_species)
         return x[:S * self.lat.M].reshape(S, self.lat.M)
+
+    def _check_pinned_room(self):
+        """Refuse an INFEASIBLE pinned start (Invariant 2): when every
+        molecule carrying a pinned segment type is restricted, the amount
+        of that segment is fixed (theta x its fraction of the chain) and
+        must fit in the pinned range at phi <= 1. If it does not, no
+        solution exists, and the solver used to grind through its whole
+        cascade before blaming the step size (9 Oct 2026: teaching
+        exercise 10, ABC-40/50 -- a 5-layer cylindrical core range for 207
+        and 302 PPO segments where it holds 86.4 sites; the compiled
+        Namics fails that start too and carries the unconverged state
+        into the next one)."""
+        for seg in self.it_segs:
+            if seg.freedom != "pinned" or getattr(seg, "size", 1.0) != 1.0:
+                continue
+            hosts = [m for m in self.molecules.values()
+                     if any(q is seg for q in m.seq)]
+            if not hosts or any(m.freedom != "restricted"
+                                or getattr(m, "poly", False)
+                                for m in hosts):
+                continue
+            amount = sum(m.theta * sum(q is seg for q in m.seq) / m.N
+                         for m in hosts)
+            room = float(self.lat.weighted_sum(self.gmask[seg.name]))
+            if amount > room * (1.0 + 1e-9):
+                names = ", ".join(m.name for m in hosts)
+                raise ValueError(
+                    f"mon : {seg.name} is pinned to a range that holds "
+                    f"{room:.6g} sites, but the restricted molecule(s) "
+                    f"{names} carry {amount:.6g} {seg.name} segments "
+                    f"(theta x the {seg.name} fraction of the chain): no "
+                    f"state with phi <= 1 exists. Widen "
+                    f"'mon : {seg.name} : pinned_range' or lower theta")
 
     def var_mask(self):
         """Boolean mask over the full variable vector selecting what the
@@ -1625,7 +1681,8 @@ class System:
 
     # ---- output property lookup (kal) -----------------------------------------
     def get_value(self, key, name, prop):
-        """Returns ('int'|'real'|None, value). None -> NiN, like Namics."""
+        """Returns ('int'|'real'|'string'|None, value). None -> NiN, like
+        Namics."""
         lat = self.lat
         if prop.endswith("-value"):
             alias = prop[:-6]
@@ -1651,6 +1708,21 @@ class System:
                     "n_layers_z": 2}.get(prop)
             if axis is not None and axis < len(layers):
                 return "int", int(layers[axis])
+            # the STRING lattice properties, printed bare like Namics
+            # (Lattice::PushOutput: geometry with flat -> planar, and
+            # lattice_type, hexagonal for anything not simple_cubic) --
+            # they used to print NiN plus an unknown-property warning
+            if prop == "geometry":
+                g = str(lat.geometry)
+                return "string", ("planar" if g in ("flat", "planar") else g)
+            if prop == "lattice_type":
+                return "string", ("simple_cubic"
+                                  if (lat.lattice_type == "simple_cubic"
+                                      and lat.fjc == 1) else "hexagonal")
+            if prop == "gradients":
+                return "int", int(getattr(lat, "gradients", 1))
+            if prop == "FJC_choices":
+                return "int", 2 * int(lat.fjc) + 1
             if prop == "volume":
                 return "real", self.lat.volume
         if key == "sys":
@@ -2094,6 +2166,18 @@ class System:
                         x, err, ok = xf, errf, okf
                 except FloatingPointError:
                     pass                      # keep the best iterate so far
+            # (3) plain-Newton polish of a near-converged stall: a soft mode
+            # (a free-floating lamella's lattice-pinned translation) defeats
+            # the merit-function line searches above; see _newton_polish
+            if not ok and err < POLISH_MAX_ERR and n <= 1000:
+                try:
+                    xq, itq, errq, okq = self._newton_polish(
+                        x, tolerance, verbose=verbose)
+                    it += itq
+                    if okq or errq < err:
+                        x, err, ok = xq, errq, okq
+                except (FloatingPointError, np.linalg.LinAlgError):
+                    pass                      # keep the best iterate so far
         # sync all observables (phi, alpha, GN, ...) to the returned x
         self.residual(x)
         self.iterations, self.residual_norm = it, err
@@ -2213,6 +2297,65 @@ class System:
                 x = x - delta * gc
         progress.clear()
         return x_best, it, best_err, False
+
+    def _newton_polish(self, x, tolerance, maxit=30, verbose=False):
+        """Last cascade stage: plain Newton steps from a NEAR-converged
+        stalled iterate, on the forward-difference Jacobian of the iterated
+        variables (`var_mask`), accepted WITHOUT a line search.
+
+        Why (9 Oct 2026, teaching exercise 10, planar refined lamella):
+        a free-floating object -- there a bilayer released from its pinned
+        core -- has a translation mode whose only restoring force is the
+        exponentially weak lattice-registry (pinning) potential, so the
+        Jacobian carries ONE singular value ~1e-6 among O(0.1-10) others.
+        The pseudohessian and its rescues then wander at max|g| ~ 1e-6 to
+        1e-5 for thousands of iterations (the compiled Namics needs ~4300,
+        so it fails at its default limit of 1000 too), and a monotone merit
+        function -- the line searches on ||g|| -- rejects exactly the steps
+        that carry the object into its pinning minimum, because the first
+        such step raises ||g|| before the next one collapses it. Undamped
+        Newton converges quadratically there (8 steps, 2e-5 -> 1e-10).
+
+        Guards: reached only after every other stage failed, from max|g| <
+        POLISH_MAX_ERR (a root finder started that close to a solution
+        stays on its branch); a non-finite or exploding (max|g| > 1) step
+        ends the stage, and so do 8 steps without a new best; the BEST
+        iterate is returned, so the stage never makes the state worse.
+        Returns (x, newton_steps, max|g|, converged)."""
+        res = self.residual
+        idx = np.where(self.var_mask())[0]
+        x = np.array(x, dtype=float)
+
+        def g_red(xr):
+            xf = x.copy()
+            xf[idx] = xr
+            return np.asarray(res(xf), dtype=float).ravel()[idx]
+
+        xr = x[idx].copy()
+        g = g_red(xr)
+        best_err, best_xr = float(np.max(np.abs(g))), xr.copy()
+        stale = k = 0
+        while k < maxit and best_err >= tolerance:
+            J = fd_jacobian(g_red, xr, g)
+            xr = xr + np.linalg.solve(J, -g)
+            k += 1
+            g = g_red(xr)
+            err = float(np.max(np.abs(g)))
+            if verbose:
+                print(f"    Newton polish step {k}: max|g| = {err:.2e}")
+            if not np.isfinite(err) or err > 1.0:
+                break
+            if err < best_err:
+                best_err, best_xr, stale = err, xr.copy(), 0
+            else:
+                stale += 1
+                if stale >= 8:
+                    break
+        x[idx] = best_xr
+        if verbose:
+            print(f"    Newton polish: {k} steps, max|g| = {best_err:.2e}, "
+                  f"converged={best_err < tolerance}")
+        return x, k, best_err, best_err < tolerance
 
     def _solve_pseudohessian(self, x0, tolerance, iterationlimit, deltamax,
                              anchor_full=False, verbose=False,

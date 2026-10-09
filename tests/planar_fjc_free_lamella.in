@@ -1,0 +1,48 @@
+// Released planar refined lamella (teaching exercise 10, ABF-20 at
+// n_layers 30): PEO20-PPO20 in water, hexagonal FJC_choices 5. Start 1
+// pins the PPO core, start 2 releases it; the bilayer detaches from the
+// mirror and floats, held only by the lattice-registry (pinning)
+// potential -> one Jacobian singular value ~1e-6. The pseudohessian and
+// its rescues stall at max|g| ~1e-5 (the compiled Namics needs ~4300
+// iterations on the 100-layer box); the cascade's last stage, the
+// plain-Newton polish (System._newton_polish), converges it. Also guards
+// the STRING lattice kal properties (geometry, lattice_type: printed bare,
+// like Namics). Oracle: Namics 3e9eafd with iterationlimit 100000.
+mon : PEO : freedom : free
+mon : W : freedom : free
+mon : PPO : freedom : pinned
+mon : PPO : pinned_range : 1;6
+
+mon : PEO : chi_PPO : 0.02
+mon : PEO : chi_W : 0.4
+mon : PPO : chi_W : 2.0
+
+mol : solvent : composition : (W)1
+mol : solvent : freedom : solvent
+
+mol : poly : composition : (PEO)20(PPO)20
+mol : poly : freedom : restricted
+mol : poly : theta : 8.3019
+
+lat : mylat : geometry : flat
+lat : mylat : n_layers : 30
+lat : mylat : lattice_type : hexagonal
+lat : mylat : bondlength : 4e-10
+lat : mylat : FJC_choices : 5
+
+start
+
+mon : PPO : freedom : free
+
+output : kal : append : false
+
+kal : sys : NN : grand_potential
+kal : mol : poly : theta
+kal : mol : poly : mu
+kal : mol : poly : phibulk
+kal : lat : mylat : geometry
+kal : lat : mylat : lattice_type
+kal : lat : mylat : gradients
+kal : lat : mylat : FJC_choices
+
+start

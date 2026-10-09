@@ -1177,19 +1177,25 @@ from the `_0` file:
   declarations; a spec before its declaration is a Namics load error).
 - Within `.kal`, a `kal : mol : ...` or `kal : mon : ...` line must precede any
   `kal : sys : <name> : ...` line, or Namics raises "Error in Load() in output".
-- `kal : lat : ...` — PySFBox accepts it, but the current Namics build does
-  not; leave it out of inputs meant to run in both engines.
+- `kal : lat : ...` runs in both engines (the compiled Namics prints its
+  lattice properties in input-line order; PySFBox groups `kal` columns by
+  object type, so the column ORDER can differ when `kal : lat`/`sys`/`mol`
+  lines interleave — compare by column name).
 - The default system name is `NN` in the current Namics (older/teaching inputs
   use `noname`); the `<name>` in `sys : <name> : ...` must match your system.
 
 ### `kal` scalar properties (`System.get_value`)
 
-Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
+Types: `int` → `%d`, `real` → `%.16e`, `string` → printed bare (like Namics' `%s`), no match → `NiN`.
 
 | key | prop | type | meaning |
 |---|---|---|---|
 | `lat` | `n_layers` | int | the input layer count (`n_layers`, or `n_layers_x` on N-D) — not the refined count at `FJC_choices` > 3, like Namics |
 | `lat` | `n_layers_x`/`_y`/`_z` | int | the input layer count along that axis (N-D) |
+| `lat` | `geometry` | string | `planar` (also for `flat` input), `cylindrical`, `spherical` (N-D: the geometry name), as Namics prints it |
+| `lat` | `lattice_type` | string | `simple_cubic` or `hexagonal`; `hexagonal` on every refined lattice (`FJC_choices` > 3, the hexagonal FJC family), as Namics prints it |
+| `lat` | `gradients` | int | number of gradients (1, 2 or 3) |
+| `lat` | `FJC_choices` | int | 2·fjc + 1 (3 on unrefined lattices) |
 | `lat` | `volume` | real | geometric volume of the interior lattice (closed form). On refined curved lattices (`FJC_choices > 3`) the summed site volumes differ from it by a few %, so θ − φ_b·volume is not an excess there; use `theta_exc` |
 | `sys` | `grand_potential` | real | grand potential Ω (per unit area / normalised as in Namics) |
 | `sys` | `Laplace_pressure` | real | the pressure difference across the system, Δp = p<sub>in</sub> − p<sub>out</sub> = −ω(first interior layer) + ω(last interior layer), with ω(z) the grand-potential density (`pro : sys : X : grand_potential_density`, a local −pressure; 1-gradient; at fjc > 1 the first refined site of each outer physical layer). For a droplet/micelle/vesicle centred at the lower bound whose far side reaches a bulk plateau this is the Laplace pressure: Δp = 2γ/R<sub>s</sub> (sphere) or γ/R<sub>s</sub> (cylinder) at the surface of tension R<sub>s</sub>, 0 across a flat interface, and 0 at the pressure-balanced (tensionless) point that the `Laplace_pressure` search drives to. It is NOT a pressure difference when either end layer is not a bulk plateau (a wall, a brush, a box too small for the far field). **Deliberate deviation from Namics** (7 Oct 2026): Namics prints −ω(first) only, which equals Δp only when the far side sits at ω = 0 (a reservoir-terminated box: free molecules set the far field — every regression with this column is of this kind and printed unchanged). With restricted phase formers the implied bulk can land on a phase or an absent state, the far plateau carries ω ≠ 0, and the one-sided value is no pressure difference (a flat two-phase box: one-sided −0.0396, two-sided 3e-11). PySFBox prints a one-time note giving both values whenever the magnitude of ω(last) exceeds max(1e-7, 1e-4 × the magnitude of Δp), i.e. whenever the column differs visibly from Namics'. Same quantity as the `Laplace_pressure` search target |

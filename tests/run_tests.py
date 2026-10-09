@@ -58,22 +58,38 @@ CAP_ITERLIMIT = {"homopolymer_adsorption.in"}
 SKIP = {"polad.in", "Two_brushes_interactingSurfaceBC.in"}
 
 
+def _field(v, strings):
+    """One table field -> float; NiN -> nan; a STRING property (e.g. kal
+    lat : X : geometry, printed bare like Namics) -> nan, with the text
+    collected in `strings` for an exact comparison."""
+    if v == "NiN":
+        return float("nan")
+    try:
+        return float(v)
+    except ValueError:
+        strings.append(v)
+        return float("nan")
+
+
 def read_table(path):
-    """Read a .kal or .pro file -> (header list, 2D float array, NiN->nan)."""
+    """Read a .kal or .pro file -> (header list, 2D float array, NiN->nan,
+    list of string fields in reading order)."""
+    strings = []
     with open(path) as fp:
         header = fp.readline().rstrip("\n").split("\t")
-        rows = [[float("nan") if v == "NiN" else float(v)
-                 for v in ln.rstrip("\n").split("\t")]
+        rows = [[_field(v, strings) for v in ln.rstrip("\n").split("\t")]
                 for ln in fp if ln.strip()]
-    return header, np.array(rows, dtype=float)
+    return header, np.array(rows, dtype=float), strings
 
 
 def compare(ref_path, new_path):
     """Column-wise compare; returns (ok, message)."""
-    href, ref = read_table(ref_path)
-    hnew, new = read_table(new_path)
+    href, ref, sref = read_table(ref_path)
+    hnew, new, snew = read_table(new_path)
     if href != hnew:
         return False, "headers differ"
+    if sref != snew:
+        return False, "string fields differ"
     if ref.shape != new.shape:
         return False, f"shape {new.shape} != reference {ref.shape}"
     worst = 0.0

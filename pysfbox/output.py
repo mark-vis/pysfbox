@@ -3,7 +3,7 @@
 Formats follow Namics output.cpp / LGrad1::PutProfiles:
 - .kal: one file per input (basename.kal), tab-separated; header line of
   `key:name:prop` labels written when the file is created; one row per
-  calculation / var step; reals as %.16e, ints as %i, unknown as NiN.
+  calculation / var step; reals as %.16e, ints as %i, strings bare, unknown as NiN.
 - .pro: header `x` + `key:name:prop` labels; rows: physical coordinate
   (offset_first_layer + z - 0.5, like Namics) as %e, profile values as
   %.20g; one file per profile dump, numbered basename.pro /
@@ -42,6 +42,8 @@ def write_kal(path, specs, system, new_file):
                 fields.append(f"{val:d}")
             elif typ == "real":
                 fields.append(f"{val:.16e}")
+            elif typ == "string":
+                fields.append(str(val))         # bare, like Namics' %s
             else:
                 fields.append("NiN")
                 print(f"  warning: kal property {k}:{n}:{p} unknown -> NiN")
