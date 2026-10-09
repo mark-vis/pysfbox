@@ -14,7 +14,7 @@ authors:
     affiliation: Eindhoven University of Technology
     email: m.vis@tue.nl
     orcid: "https://orcid.org/0000-0002-2992-1175"
-version: 1.4.0
+version: 1.4.1
 date-released: "2026-10-09"
 license: GPL-3.0-or-later
 repository-code: "https://github.com/mark-vis/pysfbox"

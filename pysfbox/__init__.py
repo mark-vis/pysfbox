@@ -29,5 +29,5 @@ from .system import System
 from .inputreader import read_input
 from .runner import run_file
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 __all__ = ["System", "read_input", "run_file", "__version__"]
