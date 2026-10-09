@@ -18,6 +18,29 @@ import numpy as np
 LAMBDA = {"simple_cubic": 1.0 / 6.0, "hexagonal": 0.25}
 
 
+def curved_face_radii(offset, fjc, M):
+    """Face radii (refined units) of the curved 1-gradient Poisson operator
+    and field energy: site x has the inner face r_minus[x] and the outer
+    face r_plus[x] = r_minus[x] + 1, areas r (cylinder) / r^2 (sphere).
+
+    fjc = 1 (the Namics shells, LGrad1 `r++` per site): the faces are the
+    site's own shell [r - 1, r], r = offset + x.
+    fjc > 1 (refined): the site sits at r_site = offset*fjc + (x - fjc + 1)
+    (= fjc * r_k, `Lattice1D._setup_fjc`) and its faces are the
+    propagator's own one-step channel surfaces r_site -+ 1/2, with plain
+    GEOMETRIC areas -- the finite-volume operator of the cell centred on the
+    site, O(h^2)-consistent (decision 9 Oct 2026). Namics keeps the
+    fjc = 1 rule at fjc > 1 (faces [r_site - 1, r_site], half a refined
+    cell inward): first-order inconsistent, a deliberate deviation from
+    Namics (reported to the Namics authors). The source C_geo q L and the
+    coefficients' prefactors are frame-independent."""
+    x = np.arange(M, dtype=float)
+    r_plus = offset * fjc + (x - fjc + 1.0)
+    if fjc > 1:
+        r_plus = r_plus + 0.5
+    return r_plus, r_plus - 1.0
+
+
 class Lattice1D:
     def __init__(self, n_layers, geometry="planar",
                  lattice_type="simple_cubic", lowerbound="mirror",
@@ -104,11 +127,32 @@ class Lattice1D:
 
     # ---- fjc > 1: refined (2*fjc+1)-point lattice (Namics ComputeLambdas) ---
     def _setup_fjc(self, geometry):
+        fjc, FJC, MX, M = self.fjc, self.FJC, self.MX, self.M
+        if geometry == "planar":
+            # Namics LG1Planar.cpp:14-22: position-independent uniform
+            # FJC weights -- a bond of length b lands uniformly across
+            # the 2*fjc+1 grit offsets (the continuum freely-jointed
+            # cos-theta projection), with HALF weight at the two end
+            # channels (half-cells): interior 1/(2fjc), ends 1/(4fjc).
+            # L = 1/fjc per refined layer (volume in b^3 units). No
+            # reflection folding: mirrors are carried by the fjc-deep
+            # ghost fills in set_bounds, exactly like LG1Planar's
+            # truncated AddTimes loops over ghosted arrays.
+            L = np.zeros(M)
+            LAM = np.zeros((FJC, M))
+            L[fjc:M - fjc] = 1.0 / fjc
+            iv = slice(fjc, M - fjc)
+            LAM[0, iv] = LAM[FJC - 1, iv] = 1.0 / (2.0 * (FJC - 1))
+            for j in range(1, FJC - 1):
+                LAM[j, iv] = 1.0 / (FJC - 1)
+            self.L, self.LAM = L, LAM
+            self.volume = float(MX) / fjc     # Namics LGrad1.cpp:183
+            self.L_sum = self.volume          # = sum(L[iv]) exactly
+            return
         if geometry not in ("spherical", "cylindrical"):
             raise NotImplementedError(
-                f"FJC_choices > 1 with geometry '{geometry}' is not supported "
-                "yet (not yet ported to PySFBox); PySFBox has spherical/cylindrical")
-        fjc, FJC, MX, M = self.fjc, self.FJC, self.MX, self.M
+                f"FJC_choices > 1 with geometry '{geometry}' is not "
+                "supported")
         off = self.offset
         L = np.zeros(M)
         LAM = np.zeros((FJC, M))            # LAM[c, i], neighbour offset c-fjc

@@ -13,7 +13,8 @@ surface bound / one wall per face, [25] mon freedom values, [29] negative
 neutralizer bulk, [30] bound values + wrong-dimension keys, [31] lambda at
 fjc>1/N-D, [36] 1-D range bounds, [46] micro/bate blocks, [59] mol
 freedom/amount, [61] unused state chi, [71] UTF-8 BOM, [84] mu : 0,
-[45] var scan validation, [53] one target per var block.
+[45] var scan validation, [53] one target per var block; [X] the
+characteristic-function parse errors and compute_kJ0 (9 Oct 2026).
 """
 import contextlib
 import io
@@ -343,6 +344,32 @@ with contextlib.redirect_stdout(buf):
                ).initial_guess()
 check("1-gradient kind on N-D cold-starts with a note",
       x0 is None and "cold-starts" in buf.getvalue(), buf.getvalue())
+
+print("[X] the Namics characteristic function (sys : X) and compute_kJ0")
+WEAK = (WALL.replace("mon : A : chi_S : -1.5\n", "")
+        + "state : A1 : mon : A\nstate : A1 : valence : 0\n"
+        "state : A2 : mon : A\nstate : A2 : valence : 0\n"
+        "state : A2 : alphabulk : 0.3\n")
+raises("X : ? prints the help", WALL + "sys : NN : X : ?\n", ValueError,
+       ["characteristic function", "molname"])
+raises("X not starting with F", WALL + "sys : NN : X : G-water\n",
+       ValueError, ["expected 'F'"])
+raises("X with an unknown molecule", WALL + "sys : NN : X : F-wat\n",
+       ValueError, ["not a molecule name", "did you mean 'water'"])
+raises("X with a trailing '-'", WALL + "sys : NN : X : F-water-\n",
+       ValueError, ["empty entry"])
+raises("X state entry with two arguments",
+       WEAK + "sys : NN : X : F-(A1,A2)\n", ValueError, ["not recognised"])
+raises("X state entry with an unknown state",
+       WEAK + "sys : NN : X : F-(A1,B7,1)\n", ValueError, ["B7"])
+raises("X state entry whose mu_j has no monomeric host (Namics: mu = 0)",
+       WEAK + "sys : NN : X : F-(A1,A2,1)\n", ValueError,
+       ["mu-<state>", "mu = 0"])
+builds("X : F - water - pol (spaces are free, as in Namics)",
+       WALL + "sys : NN : X : F - water - pol\n")
+raises("compute_kJ0 is refused with the pointer",
+       WALL + "sys : NN : compute_kJ0 : true\n", NotImplementedError,
+       ["compute_kJ0", "bare first and second moments", "curved ladders"])
 
 print(f"all done ({failures} failure(s))")
 

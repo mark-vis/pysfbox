@@ -15,8 +15,9 @@ import re
 
 import numpy as np
 
+from . import progress
 from .inputreader import get_blocks, last, substitute_aliases
-from .lattice import Lattice1D
+from .lattice import Lattice1D, curved_face_radii
 from .latticend import LatticeND
 from .model import Molecule, Segment, U_CLIP
 from .reactions import Reaction, State, solve_bulk_alphas
@@ -33,6 +34,105 @@ K_BOLTZMANN = 1.38065e-23       # J/K
 T_ABS = 298.15                  # K
 EPS0 = 8.85418e-12              # F/m
 K_BT = K_BOLTZMANN * T_ABS
+
+
+# the characteristic function X (Namics `sys : NN : X`, system.cpp:1104-1206
+# parse, :1588-1627 evaluation): the help text Namics prints on a malformed
+# definition or on `X : ?`, in its own words
+_X_HELP = (
+    "X is the characteristic function specified by the user. Examples of "
+    "how a characteristic function is defined:\n"
+    "  Case 1, no internal states: 'F-molname_1-molname_2-...'\n"
+    "  Case 2, internal states: 'F-molname_1-(statename_i,statename_j,n)-...'"
+    "\n"
+    "F is the Helmholtz energy (sys : free_energy); '-molname' subtracts "
+    "n*mu of that molecule; '(statename_i,statename_j,n)' subtracts "
+    "n * theta_i * mu_j, with theta_i the amount of state i (sum over sites) "
+    "and mu_j the chemical potential of state j, which must belong to a "
+    "monomeric molecule (mol : X : mu-statename_j). Add as many entries as "
+    "you wish. Example: X : F-water-Na-Cl is canonical in every molecule "
+    "not listed and grand in the listed ones.")
+
+
+def parse_characteristic_X(spec, mol_names, states, monomer_of_state):
+    """Parse a Namics characteristic-function definition (`sys : NN : X`).
+
+    spec              the value string, e.g. 'F-water-Na-(PH,H3O,1)'
+                      (whitespace is free, as Namics strips it)
+    mol_names         the declared molecule names
+    states            {state name: State}, every declared state
+    monomer_of_state  {state name: [molecule names]}: the MONOMERIC
+                      molecules whose segment carries that state
+
+    Returns (mols, state_terms): mols = list of molecule names to subtract
+    n*mu for (repeats allowed, as in Namics), state_terms = list of
+    (state_i, state_j, molecule of state_j, n). Raises ValueError with the
+    Namics help text on every malformed entry (Namics sets success = false
+    and stops); `X : ?` prints the help the same way."""
+    s = re.sub(r"\s+", "", str(spec))
+    sub = s.split("-")
+    if sub[0] != "F":
+        raise ValueError(
+            "sys : X : " + _X_HELP + "\n"
+            + ("(help requested with X : ?)" if s == "?" else
+               f"Error found: the first item of '{spec}' is not the "
+               "expected 'F'"))
+    mols, terms = [], []
+    for item in sub[1:]:
+        if item == "":
+            raise ValueError(
+                f"In characteristic function X, '{spec}' has an empty entry "
+                "(a doubled or trailing '-'?)\n" + _X_HELP)
+        parts = item.split(",")
+        if len(parts) == 1:
+            if item not in mol_names:
+                from .inputreader import _suggest
+                raise ValueError(
+                    f"In characteristic function X, the entry '{item}' is "
+                    f"not a molecule name{_suggest(item, mol_names)}\n"
+                    + _X_HELP)
+            mols.append(item)
+            continue
+        if (len(parts) != 3 or not parts[0].startswith("(")
+                or not parts[2].endswith(")")):
+            raise ValueError(
+                f"In characteristic function X, the entry '{item}' is not "
+                "recognised as '(statename_1,statename_2,n_1)'\n" + _X_HELP)
+        si, sj, ns = parts[0][1:], parts[1], parts[2][:-1]
+        try:
+            n = int(ns)
+        except ValueError:
+            n = -1
+        if n < 0:
+            raise ValueError(
+                f"In characteristic function X, the entry '{item}' does not "
+                "include a non-negative integer at the third argument")
+        missing = [nm for nm in (si, sj) if nm not in states]
+        if missing:
+            raise ValueError(
+                f"In characteristic function X, the entry '{item}' is not "
+                "coding for '(statename_1,statename_2,n_1)': state name(s) "
+                f"{', '.join(missing)} do not exist")
+        hosts = monomer_of_state.get(sj, [])
+        if len(hosts) != 1:
+            # Namics prints "Failed to find chemical potential for state
+            # ...: (not a monomer?) ... mu is set to zero" and goes on (and
+            # from the second state entry on silently reuses the previous
+            # entry's mu: its -999 sentinel is set once, before the loop,
+            # system.cpp:1598). A number built on mu = 0 is not X, so
+            # PySFBox refuses instead (Invariant 2).
+            why = ("no monomeric molecule carries it" if not hosts else
+                   "several monomeric molecules carry it ("
+                   + ", ".join(hosts) + ")")
+            raise ValueError(
+                f"In characteristic function X, the entry '{item}': the "
+                f"chemical potential of state {sj} is not defined -- {why} "
+                "(a state chemical potential mu-<state> exists only for a "
+                "state of a single monomeric molecule; Namics would set "
+                "mu = 0 here)")
+        terms.append((si, sj, hosts[0], n))
+    return mols, terms
+
 
 
 class _Species:
@@ -393,12 +493,12 @@ class System:
                                      for s in self.segments.values()}) > 1
             self.fixedPsi0 = any(s.fixed_psi0
                                  for s in self.segments.values())
-            # face radii for the curved Poisson/field-energy (refined units,
-            # Namics LGrad1: r_plus = offset*fjc + (x-fjc+1), r_minus = r-1)
+            # face radii for the curved Poisson/field-energy (refined units;
+            # fjc = 1: the Namics shells; fjc > 1: centred on the site, the
+            # propagator's channel surfaces -- see curved_face_radii)
             if self.geom != "planar":
-                x = np.arange(lat.M, dtype=float)
-                self.r_plus = lat.offset * lat.fjc + (x - lat.fjc + 1.0)
-                self.r_minus = self.r_plus - 1.0
+                self.r_plus, self.r_minus = curved_face_radii(
+                    lat.offset, lat.fjc, lat.M)
                 if self.fixedPsi0:
                     raise NotImplementedError(
                         "fixed surface potential (e.psi0/kT) on a curved "
@@ -595,6 +695,40 @@ class System:
                 self._check_bulk_signs()
             except RuntimeError as e:
                 raise ValueError(str(e)) from None
+
+        # ---- the characteristic function X (Namics sys : X) --------------
+        # parsed here so a malformed definition stops the run before the
+        # solve, like Namics' CheckInput (evaluated at output time,
+        # characteristic_X)
+        self.X_mols, self.X_states = None, None
+        xspec = sys_last("X")
+        if xspec is not None:
+            all_states = {st.name: st for sg in self.segments.values()
+                          for st in sg.states}
+            mono = {}
+            for m in self.molecules.values():
+                if m.N == 1 and len(m.seq) == 1:
+                    for st in m.seq[0].states:
+                        mono.setdefault(st.name, []).append(m.name)
+            self.X_mols, self.X_states = parse_characteristic_X(
+                xspec, list(self.molecules), all_states, mono)
+        if sys_last("compute_kJ0") is not None:
+            # Namics' compute_kJ0 pushes kal kJ0 = -(first moment) and
+            # kbar = second moment of the planar grand-potential density
+            # about a midpoint (system.cpp:1561-1586, GetSpontaneousCurvature
+            # / GetKBar :3229-3241). Those bare moments are not the Helfrich
+            # constants of an SF film, so the column is not ported.
+            raise NotImplementedError(
+                "sys : compute_kJ0 is not supported in PySFBox. Namics' "
+                "kJ0 and kbar are the bare first and second moments of the "
+                "planar grand-potential density (taken about z = 0 because "
+                "of a Namics bug), not the Helfrich constants kappa*J0 and "
+                "kbar of a self-consistent film: they miss the chain-end, "
+                "bulk-jump and chi site-average contributions. Remove the "
+                "line. The Helfrich constants follow from curved ladders "
+                "(fit the grand potential of cylinders and spheres against "
+                "1/R); the PySFBox development version also computes them "
+                "from one flat film.")
         self.alpha = np.zeros(lat.M)
         self.iterations = 0
         self.residual_norm = np.inf
@@ -988,7 +1122,9 @@ class System:
         """Electric-field energy density EE(z) (Namics UpdateEE). Planar
         (LG1Planar): EE = pf_ee*[(dpsi_left)^2 + (dpsi_right)^2]. Curved
         (LGrad1): each squared field difference is weighted by its FACE
-        radius (cyl: r; sph: r^2) and divided by the shell volume L, with
+        radius (cyl: r; sph: r^2; the radii of `curved_face_radii`, the
+        same faces as `_psi_residual`, centred on the site at fjc > 1) and
+        divided by the shell volume L, with
         pf = pf_base*pi (cyl) or pf_base*2pi/fjc (sph) -- so EE is an
         energy DENSITY per unit volume and L*eps*EE sums to the bond
         energies under the L-weighted weighted_sum."""
@@ -996,8 +1132,12 @@ class System:
         iv = slice(lat.fjc, lat.M - lat.fjc)
         EE = np.zeros(lat.M)
         if self.geom == "planar":
+            # interior rows only (the refined lattice has fjc ghost layers;
+            # a [1:-1] form would write garbage equations into the ghost
+            # region at fjc > 1)
             d = np.diff(psib)                # d[x] = psi[x+1]-psi[x]
-            EE[1:-1] = self.pf_ee * (d[:-1] ** 2 + d[1:] ** 2)
+            EE[iv] = self.pf_ee * (d[lat.fjc - 1:lat.M - lat.fjc - 1] ** 2
+                                   + d[lat.fjc:lat.M - lat.fjc] ** 2)
             return EE
         dl = (psib[iv] - psib[lat.fjc - 1:lat.M - lat.fjc - 1]) ** 2  # left^2
         dr = (psib[iv] - psib[lat.fjc + 1:lat.M - lat.fjc + 1]) ** 2  # right^2
@@ -1073,8 +1213,12 @@ class System:
         free branch, all fjc) use the SAME 3-point flux balance with the
         coefficients weighted by the face radius (cyl: r; sph: r^2) and the
         source by the shell volume L: cm*psi[x-1] + cp*psi[x+1]
-        + C_geo*q[x]*L[x] - (cm+cp)*psi[x] = 0. r_minus = 0 at the origin
-        gives the inner zero-flux symmetry automatically. This is the
+        + C_geo*q[x]*L[x] - (cm+cp)*psi[x] = 0. The face radii are
+        `curved_face_radii`: at fjc = 1 the Namics shells (r_minus = 0 at
+        the origin); at fjc > 1 the faces r_site -+ 1/2 centred on the site
+        (the propagator's channel surfaces, geometric areas; Namics puts
+        them half a refined cell inward). psi ghosts always mirror, so the
+        innermost/outermost faces carry no flux in either frame. This is the
         correct flux-conservative equation (the factor-2 bug lives only in
         the fixedPsi0 branch, which curved charged systems do not use)."""
         lat = self.lat
@@ -1088,8 +1232,9 @@ class System:
             em = eps[fjc - 1:M - fjc - 1]        # eps[x-1]
             ep = eps[fjc + 1:M - fjc + 1]        # eps[x+1]
             rm, rp = self.r_minus[iv], self.r_plus[iv]
-            # The face coefficients use the INTEGER refined radius r (Namics
-            # r++ per site) = fjc x the lattice radius r_lat. The correct
+            # The face coefficients use the refined radius r = fjc x the
+            # lattice radius r_lat (Namics r++ per site; at fjc > 1 the faces
+            # sit at r_site -+ 1/2, centred on the site). The correct
             # flux-conservative source C_geo*q*L is fixed by refinement
             # consistency: the physical gradient across a refined bond carries
             # one fjc, so the flux term scales as the coefficient radius (r^1
@@ -1121,10 +1266,17 @@ class System:
             g_psi[iv] = psi_raw[iv] - X
             self.q, self.eps_prof = q, eps
             return g_psi
+        # interior rows only (LG1Planar loops x = fjc .. MX+fjc-1): [1:-1]
+        # slices would assume fjc = 1 and write garbage equations into the
+        # ghost region at planar FJC_choices > 3 (unmasked rows: the solve
+        # is unaffected, but the reported max|g| would be polluted)
         C2 = self.C_psi * 2.0 / fjc**2
-        epsm = eps[:-2] + eps[1:-1]
-        epsp = eps[1:-1] + eps[2:]
-        X = ((epsm * psib[:-2] + C2 * q[1:-1] + epsp * psib[2:])
+        piv = slice(fjc, M - fjc)
+        pm1 = slice(fjc - 1, M - fjc - 1)
+        pp1 = slice(fjc + 1, M - fjc + 1)
+        epsm = eps[pm1] + eps[piv]
+        epsp = eps[piv] + eps[pp1]
+        X = ((epsm * psib[pm1] + C2 * q[piv] + epsp * psib[pp1])
              / (epsm + epsp))
         if self.fixedPsi0:
             el = np.where(self.psiMask)[0]
@@ -1154,11 +1306,11 @@ class System:
                                       + C2 * q[i]) / a_gh
                 self.q_electrode[i] = (-a_nb * (psi_raw[nb] - psi0) / C2
                                        - q[i])
-            free = ~self.psiMask[1:-1]
-            g_psi[1:-1] = np.where(free, psi_raw[1:-1] - X,
-                                   (psi_raw - x_target)[1:-1])
+            free = ~self.psiMask[piv]
+            g_psi[piv] = np.where(free, psi_raw[piv] - X,
+                                  (psi_raw - x_target)[piv])
         else:
-            g_psi[1:-1] = psi_raw[1:-1] - X
+            g_psi[piv] = psi_raw[piv] - X
         self.q, self.eps_prof = q, eps
         return g_psi
 
@@ -1429,6 +1581,48 @@ class System:
         mu -= N * chi_sum
         return mu
 
+    # ---- the characteristic function X (Namics sys : X) ---------------------
+    def characteristic_X(self):
+        """kal `sys : NN : X`: the user-composed potential (Namics
+        system.cpp:1588-1627)
+
+            X = F - sum_listed n_i mu_i - sum_(s_i,s_j,n) n theta_si mu_sj
+
+        F = free_energy, n_i = kal mol n, mu_i = kal mol mu, theta_si = the
+        amount of state s_i (sum over sites, all molecules carrying its
+        segment; Namics state_theta), mu_sj = mu-<s_j> of the monomeric
+        molecule carrying s_j. Every term is read through get_value, so a
+        column that prints NiN makes X NiN.
+        Deliberate deviation: Namics' mu-<state> accumulates ln(alphabulk)
+        across output events (bug #3), so its X is wrong from the second
+        kal row on whenever a state term is used; PySFBox computes mu-<s>
+        fresh. 'X : F' (no entries) prints F, where Namics prints nothing.
+        Returns ('real', X), or (None, None) -> NiN."""
+        if self.X_mols is None:
+            if "X_undeclared" not in _WARN_NOTES:
+                _WARN_NOTES.add("X_undeclared")
+                print("  note: kal sys : X needs its definition, e.g. "
+                      "sys : NN : X : F-water-Na-Cl (X : ? prints the "
+                      "help) -> NiN")
+            return None, None
+        _t, X = self.get_value("sys", "", "free_energy")
+        if X is None:
+            return None, None
+        for nm in self.X_mols:
+            _t, n = self.get_value("mol", nm, "n")
+            _t, mu = self.get_value("mol", nm, "mu")
+            if n is None or mu is None:
+                return None, None
+            X -= n * mu
+        for si, sj, host, n in self.X_states:
+            st = next(st for sg in self.segments.values()
+                      for st in sg.states if st.name == si)
+            _t, mu = self.get_value("mol", host, "mu-" + sj)
+            if mu is None:
+                return None, None
+            X -= n * self.lat.weighted_sum(st.phi) * mu
+        return "real", float(X)
+
     # ---- output property lookup (kal) -----------------------------------------
     def get_value(self, key, name, prop):
         """Returns ('int'|'real'|None, value). None -> NiN, like Namics."""
@@ -1492,6 +1686,22 @@ class System:
                 return "int", self.iterations
             if prop == "residual":
                 return "real", self.residual_norm
+            if prop == "X":
+                return self.characteristic_X()
+            if prop == "kJ0":
+                # Namics' compute_kJ0 column (a bare moment of the
+                # grand-potential density): NiN, as in Namics without
+                # compute_kJ0, plus a one-time note
+                if "kJ0" not in _WARN_NOTES:
+                    _WARN_NOTES.add("kJ0")
+                    print("  note: sys : kJ0 is Namics' compute_kJ0 column "
+                          "(the bare first moment of the grand-potential "
+                          "density about z = 0, not the Helfrich kappa*J0 "
+                          "of a self-consistent film; not supported) -> "
+                          "NiN. The Helfrich constants follow from curved "
+                          "ladders (grand potential of cylinders and "
+                          "spheres against 1/R)")
+                return None, None
         if key == "state":
             for seg in self.segments.values():
                 for st in seg.states:
@@ -1888,6 +2098,7 @@ class System:
         self.residual(x)
         self.iterations, self.residual_norm = it, err
         self._last_u = self.unpack(x)
+        progress.clear()
         if ok:
             self._check_bulk_signs()
         if not ok:
@@ -1935,9 +2146,11 @@ class System:
         for it in range(1, int(iterationlimit) + 1):
             g = residual(x)
             err = np.abs(g).max()
+            progress.update("anderson", it, float(err), float(delta))
             if verbose and it % 100 == 0:
                 print(f"    it {it:5d}  max|g| = {err:.3e}  delta = {delta:.1e}")
             if err < tolerance:
+                progress.clear()
                 return x, it, err, True
             if not np.isfinite(err) or err > 1e4 * max(best_err, 1.0):
                 # blow-up: roll back to best, shrink step, reset history
@@ -1998,6 +2211,7 @@ class System:
                     x = x - delta * gc
             else:
                 x = x - delta * gc
+        progress.clear()
         return x_best, it, best_err, False
 
     def _solve_pseudohessian(self, x0, tolerance, iterationlimit, deltamax,
@@ -2014,11 +2228,15 @@ class System:
         idx = np.where(mask)[0]
         xred = (x0[idx].copy() if x0 is not None and x0.size == self.n_var()
                 else np.zeros(idx.size))
-        sn = SFNewton(self.residual, mask)
+        stage = "full-hessian anchor" if anchor_full else "pseudohessian"
+        cb = ((lambda it, gmax, alpha: progress.update(stage, it, gmax, alpha))
+              if progress.enabled() else None)   # skip the per-it max|g| when off
+        sn = SFNewton(self.residual, mask, progress=cb)
         converged, it, _ = sn.iterate(
             xred, tolerance, int(iterationlimit), float(deltamax),
             min(float(deltamax) * 1e-3, 1e-6), anchor_full=anchor_full,
             full_hessian=full_hessian)
+        progress.clear()
         x = np.zeros(self.n_var())
         x[idx] = xred
         err = float(np.abs(self.residual(x)).max())

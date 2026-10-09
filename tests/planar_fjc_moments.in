@@ -1,0 +1,58 @@
+// Refined-lattice (fjc>1) MOMENT regression (ref 20 Aug 2026): the four
+// excess-profile moment columns (1st_M_phi_z, 2nd_M_phi_z, RMS,
+// fluctuations) on a planar FJC_choices 5 (fjc = 2) adsorption layer.
+// Guards the 20 Aug 2026 fix of a double division by fjc in
+// Lattice1D.moment (collaborator bug report): z_phys is in bond units and
+// L is the physical layer volume (1/fjc), so the L-weighted sum is
+// already the physical moment -- the extra /fjc copied from Namics'
+// LGrad1::Moment in the 5 Jul 2026 physics review made every fjc>1
+// moment fjc times too small (the review matched the inner /fjc but
+// missed that Namics' 1st_M caller multiplies fjc back,
+// segment.cpp:1837). SELF-VALIDATING at creation: kal 1st/2nd moments ==
+// the physical integrals sum(z^n (phi-phib) dz)/theta_exc from the
+// committed .pro at machine precision, and are fjc-CONSISTENT (fjc 1/2/3/4
+// give <z> 1.494/1.309/1.272/1.258, converging under refinement, where the
+// bug gave exactly <z>/fjc). NOT oracle-validated on PURPOSE: the compiled
+// Namics' planar fjc>1 moments are garbage (its Moment loop sums the
+// zeroed ghost rows, whose planar L = 1/fjc != 0 -- measured 1st_M -4.81
+// where the physical value is +1.31), and its 2nd_M misses the *fjc
+// compensation everywhere (both reported to the Namics authors). The
+// curved branch of the SAME
+// moment() line IS oracle-validated (spherical fjc = 2 colloid
+// adsorption, ghost-clean in Namics): 1st_M matches the binary to 7e-7
+// and 2nd_M comes out exactly fjc x Namics', pinning the missing *fjc.
+// fjc = 1 moments are bit-identical to before the fix (factor 1); the
+// fjc = 1 columns are guarded by brush_in_good_solvent.in and friends.
+lat : NN : n_layers : 40
+lat : NN : geometry : planar
+lat : NN : lattice_type : hexagonal
+lat : NN : FJC_choices : 5
+lat : NN : lowerbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : A : freedom : free
+mon : A : chi_S : -1.5
+mon : A : chi_W : 0.4
+mon : W : freedom : free
+
+mol : pol : composition : (A)25
+mol : pol : freedom : free
+mol : pol : phibulk : 0.02
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : NN : tolerance : 1e-8
+
+output : kal : append : false
+kal : mon : A : theta_exc
+kal : mon : A : 1st_M_phi_z
+kal : mon : A : 2nd_M_phi_z
+kal : mon : A : RMS
+kal : mon : A : fluctuations
+
+output : pro : append : false
+pro : mon : A : phi
+
+start

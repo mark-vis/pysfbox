@@ -1,7 +1,9 @@
 // Charged (curved) regression 4: the spherical charged colloid + counterions
 // + salt of charged_sphere.in, but on a REFINED lattice (FJC_choices = 5,
 // i.e. fjc = 2 sub-layers per bond). Exercises the fjc>1 curved Poisson: the
-// 3-point flux balance keeps the integer-refined face radii (r, r^2) but the
+// 3-point flux balance puts its faces at r_site -+ 1/2 refined units (centred
+// on the site, geometric areas r^2; since 9 Oct 2026 -- Namics puts them half
+// a refined cell inward, a second deliberate deviation) and the
 // source coefficient is refinement-consistent -- cyl C0/pi, sph C0/(2pi)*fjc,
 // with NO extra fjc. These are the SAME coefficients Namics' UpdatePsi uses
 // (LGrad1.cpp:675,690), but the compiled Namics is still fjc-too-strong at
@@ -16,7 +18,13 @@
 // fjc_curved_charged_convergence.py fits psi(r) and shows fjc = 1/2/4 give a
 // constant, continuum-Debye screening length (R^2 > 0.9999). This committed
 // reference is PySFBox' own output -- a regression guard against future
-// code changes -- and INTENTIONALLY deviates from unpatched Namics at fjc>1.
+// code changes -- and INTENTIONALLY deviates from unpatched Namics at fjc>1
+// (the bondlength and the face frame). REGENERATED 9 Oct 2026 for the face
+// frame: Na phi moved by up to 53 % and Cl by 24 % on the two innermost
+// refined sites (the colloid layer, where the old cell of site 1 was [0, h]
+// and the new one [h/2, 3h/2] around a near-point charge), 1.3e-3 beyond
+// r = 5 b, 1e-10 in the far field. With bondlength b/fjc and the faces
+// shifted back by -1/2 cell the port reproduces the Namics binary to 4e-9.
 lat : S : geometry : spherical
 lat : S : n_layers : 30
 lat : S : gradients : 1

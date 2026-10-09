@@ -1,0 +1,39 @@
+// PLANAR refined lattice (FJC_choices > 3) regression: ported from Namics
+// LG1Planar.cpp:14-22 -- uniform bond-projection weights 1/(2fjc) with
+// half-weight end channels, L = 1/fjc.
+// ORACLE-VALIDATED at creation against the compiled Namics (3e9eafd):
+// theta 1.3e-10, free_energy 2.7e-10, grand_potential 6.2e-9, phi
+// profiles 4.8e-11 -- the shared convergence floor. Foundations exact:
+// row sums 1, ideal propagate == 1, volume == n_layers.
+lat : NN : n_layers : 40
+lat : NN : geometry : planar
+lat : NN : lattice_type : hexagonal
+lat : NN : FJC_choices : 5
+lat : NN : lowerbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : A : freedom : free
+mon : A : chi_S : -1.5
+mon : A : chi_W : 0.4
+mon : W : freedom : free
+
+mol : pol : composition : (A)25
+mol : pol : freedom : free
+mol : pol : phibulk : 0.02
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : NN : tolerance : 1e-8
+
+output : kal : append : false
+kal : mol : pol : theta
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+
+output : pro : append : false
+pro : mol : pol : phi
+pro : mon : A : phi
+
+start

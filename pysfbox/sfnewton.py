@@ -43,7 +43,7 @@ import numpy as np
 
 
 class SFNewton:
-    def __init__(self, residual_full, mask, accel=None):
+    def __init__(self, residual_full, mask, accel=None, progress=None):
         """residual_full(x_full) -> g_full over all variables; mask is a boolean
         array over those variables selecting the ones actually iterated (drops
         structurally-zero residual sites: ghost layers, frozen surfaces -- the
@@ -54,7 +54,11 @@ class SFNewton:
         contracts) and/or providing an exact Jacobian ("hessian":
         callable(x_reduced) -> dg/dx matrix, used by numhessian in place of
         the finite-difference sweep). The pure-NumPy defaults below are the
-        reference implementation."""
+        reference implementation.
+
+        progress: optional callback(it, max_g, alpha) invoked once per
+        outer iteration (the live status line, progress.py); None = off."""
+        self.progress = progress
         self._residual_full = residual_full
         self._hessian_fn = None
         self.full_hessian = False
@@ -481,6 +485,8 @@ class SFNewton:
             deltamax = self.inneriteration(h, g, x, accuracy, nvar, deltamax, ALPHA)
             accuracy = self.newdirection(h, p, p0, g, g0, x, nvar, ALPHA)
             self.normg = np.sqrt(self.minimum)
+            if self.progress is not None:
+                self.progress(it, float(np.abs(g).max()), float(ALPHA))
 
         converged = accuracy < tolerance and self.normg < 10 * tolerance
         return converged, it, accuracy

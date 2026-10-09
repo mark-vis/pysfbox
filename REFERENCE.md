@@ -166,6 +166,13 @@ an analytic starting field helps:
 (honored on the first calculation only, as in Namics). If the solver stalls,
 lower `newton : … : deltamax` (the largest step it may take; default 0.1).
 
+**Live progress line.** When stderr is an interactive terminal, long
+solves show a single self-updating line — stage, iteration, `max|g|`, and
+the accepted step `alpha` — so you can tell a slowly-converging
+calculation from a diverging one mid-solve. It never appears in
+redirected/CI output, never touches stdout or the output files, and
+`PYSFBOX_NO_PROGRESS=1` disables it.
+
 **Overflows can't happen.** Every propagator runs in the log domain with lazy
 renormalisation, so long or strongly adsorbing chains cannot overflow to
 `NaN` — there is **no `overflow_protection` switch to set** (it is always on).
@@ -247,12 +254,22 @@ coefficients. A value that is not `3, 5, 7, …` raises
 `FJC_choices must be 3 + 2*i`.
 
 - `FJC_choices : 3` (fjc = 1) keeps the familiar three-point lattice.
-- fjc > 1 is supported for **`spherical` and `cylindrical` only**; planar
-  fjc > 1 raises `FJC_choices > 1 with geometry 'planar' is not supported`.
+- fjc > 1 is supported for **`planar`, `spherical`, and `cylindrical`**
+  (planar: uniform bond-projection weights, the Namics LG1Planar branch;
+  oracle-validated at the convergence floor, `tests/planar_fjc_adsorption.in`).
+  Namics requires `lattice_type : hexagonal` for `FJC_choices > 3` —
+  declare it in inputs meant to run in both engines.
 - fjc > 1 with `gradients > 1` raises (`LatticeND` is fjc = 1 only).
 
 Note: refined charged runs use the base bond length (refinement-consistent),
-which **intentionally deviates** from Namics' fjc-scaled Debye length.
+which **intentionally deviates** from Namics' fjc-scaled Debye length. On
+refined **curved** lattices the Poisson operator and the field energy also put
+each site's faces at the propagator's own channel surfaces, r ± 1/(2·fjc)
+around the site, with geometric areas (since 9 Oct 2026); Namics puts them half
+a refined cell inward, an O(1/fjc) error (e.g. the bending moment kappa·J0 of a
+charged wall comes out low by E_field/(2·fjc)). Refined curved charged results
+therefore differ from Namics by design, most near the centre of a sphere;
+fjc = 1 and planar lattices are unaffected.
 
 ### Choosing a lattice
 
@@ -271,7 +288,7 @@ b_eff = b·√(3⟨Δz²⟩/b²):
 | `FJC_choices 7` (fjc = 3) | 19/54 | 1.03 |
 | large fjc (continuum freely jointed bond) | 1/3 | 1 |
 
-The refined stencils (`FJC_choices > 3`; curved geometries in this tree) are
+The refined stencils (`FJC_choices > 3`; planar and curved) are
 one family, ⟨Δz²⟩ = (1/3 + 1/(6·fjc²))·b², whose fjc = 1 member is the
 hexagonal stencil; `lattice_type` is then ignored. Omit it (the natural input),
 or write `hexagonal` for inputs that must also run on Namics, which refuses
@@ -941,6 +958,8 @@ sys : NN : initial_guess : polymer_adsorption
 | `delta_molecules` | `A;B` | — | the two molecules whose local ratio is pinned |
 | `phi_ratio` | positive real or `critical_ratio` | — | target ratio r; `critical_ratio` = √(N_B/N_A), the Flory–Huggins critical composition φ_A/φ_B of the pair (Namics uses √(N_A/N_B), the inverse — deliberate deviation since 7 Oct 2026) |
 | `delta_range_units` | `bondlength` / `gritsize` | — | required at `FJC_choices > 3`: `delta_range` in layers (×fjc) or refined sub-layers |
+| `X` | `F-mol1-mol2-...-(s_i,s_j,n)-...` or `?` | — | the Namics characteristic function, printed by `kal : sys : NN : X`: X = F − Σ<sub>listed</sub> n<sub>i</sub>μ<sub>i</sub> − Σ n·θ<sub>s_i</sub>·μ<sub>s_j</sub>. A bare molecule name subtracts that molecule's n·μ (repeats allowed); `(s_i,s_j,n)` subtracts n × the amount θ of state s_i (summed over all sites and molecules) × the chemical potential `mu-<s_j>` of state s_j, which must be a state of exactly ONE monomeric molecule. Whitespace is free. The first item must be `F`; `X : ?` prints the help and stops, like every malformed entry (a `ValueError` naming the entry, raised before the solve). Typical use: `F-water-Na-Cl` = Ω + Σ μ n over the molecules NOT listed, i.e. the potential canonical in a grafted/pinned/surface-group molecule and grand in every mobile one. Deviations from Namics, all deliberate: a state μ without a single monomeric host raises (Namics prints a warning, uses μ = 0, and reuses the previous entry's μ for later misses); `mu-<state>` is computed fresh (inside a var scan Namics accumulates it, so its X with a state entry is wrong from the second row); `X : F` prints F (Namics prints nothing). Oracle-validated to 2e-11 (`tests/namics_X.in`) |
+| `compute_kJ0` | anything | — | **refused** (`NotImplementedError`): Namics' `kJ0`/`kbar` columns are the bare first/second moments of the planar grand-potential density (taken about z = 0, a Namics bug), not the Helfrich constants kappa·J0 and kbar of a self-consistent film — they miss the chain-end, bulk-jump and χ site-average contributions. Remove the line. The Helfrich constants follow from curved ladders (fit the grand potential of cylinders and spheres against 1/R); the PySFBox development version also computes them from one flat film |
 
 **`initial_guess`.** Applied only to the first calculation of a run (exactly
 like Namics: after the first solve the type resets to `previous_result`, and
@@ -1178,6 +1197,8 @@ Types: `int` → `%d`, `real` → `%.16e`, no match → `NiN`.
 | `sys` | `free_energy`, `free_energy(po)` | real | Helmholtz free energy F (both spellings map to F; `(po)` is Namics' Ω + Σnμ route to the same value) |
 | `sys` | `iterations` | int | solver iteration count (solver-dependent; ignored in regression diffs) |
 | `sys` | `residual` | real | final residual norm (solver-dependent) |
+| `sys` | `X` | real | the characteristic function declared by `sys : NN : X` (see the `sys` table): F − Σ<sub>listed</sub> nμ − Σ n·θ<sub>s_i</sub>·μ<sub>s_j</sub>; NiN with a note when not declared |
+| `sys` | `kJ0` | — | Namics' `compute_kJ0` column (a bare moment of the grand-potential density, not a Helfrich constant): always NiN with a one-time note |
 | `state` | `alphabulk` | real | bulk fraction of this internal state |
 | `state` | `valence` | real | state valence (charge) |
 | `mol` | `theta` | real | total amount Σ L·φ of the molecule |

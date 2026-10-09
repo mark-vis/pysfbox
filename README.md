@@ -67,7 +67,8 @@ solves wrongly, raise with an explanation instead of running.
 - **Lattice**: one, **two, or three gradient directions** (`gradients : 1/2/3`),
   as in Namics. 1-gradient: planar, cylindrical, spherical, `simple_cubic`
   (λ=1/6) or `hexagonal` (λ=1/4), lattice refinement `FJC_choices : 5, 7, …`
-  (spherical/cylindrical), `offset_first_layer` shifts the radial origin.
+  (planar, spherical, cylindrical), `offset_first_layer` shifts the radial
+  origin.
   2-gradient (`simple_cubic`, `FJC 3`, neutral/linear): flat (x,y) and
   cylindrical (r,z); 3-gradient: flat (x,y,z). N-D uses `n_layers_x/y/z` and
   per-axis bounds `lowerbound_x`, `upperbound_y`, … (`mirror` / `surface` /
@@ -127,8 +128,11 @@ solves wrongly, raise with an explanation instead of running.
   Poisson branch (Debye lengths come out √2 too short there). Refined curved
   charged lattices (`FJC_choices > 3`) are supported and refinement-consistent:
   the Poisson equation keeps the physical bond length, where Namics' Debye
-  lengths scale spuriously with the refinement — so expect a deviation from an
-  unpatched Namics on that combination. Curved fixed-potential electrodes
+  lengths scale spuriously with the refinement, and on curved refined lattices
+  each site's Poisson faces sit at r ± 1/(2·fjc) around the site, where Namics
+  puts them half a refined cell inward — so expect a deviation from an
+  unpatched Namics on that combination (planar refined charged runs share the
+  bond-length correction). Curved fixed-potential electrodes
   raise a clear message.
 - **Weak (multistate) charges**: `state : AH : mon : A` + `state : AH :
   valence : 0` attach annealed internal states to a segment;
@@ -168,7 +172,9 @@ solves wrongly, raise with an explanation instead of running.
   and `.pro` (x at half-integer layers + `%.20g` columns), with Namics file
   numbering. Unknown output properties print `NiN` plus a warning — exactly
   like Namics. Implemented kal properties: `sys` grand_potential,
-  free_energy (and `free_energy (po)`), iterations, residual; `lat`
+  free_energy (and `free_energy (po)`), the characteristic function `X`
+  (declared with `sys : NN : X : F-water-Na-Cl`, as in Namics), iterations,
+  residual; `lat`
   n_layers / volume; `mol` theta, theta_exc, phibulk, Mu/mu (chemical
   potential), mu-STATE, n, N, chainlength, GN, phiM, phiMax, phiMin,
   `<alias>-value`; `mon` theta, theta_exc, phibulk, chi_X,
@@ -207,6 +213,7 @@ roadmap for extensions:
 | `reactions.py` | internal states, reactions, bulk ionisation solve | `state.cpp`, `reaction.cpp` |
 | `system.py` | residual, masks, observables, solver cascade, initial guesses | `system.cpp`, `solve_scf.cpp` |
 | `sfnewton.py` | pseudohessian quasi-Newton (licensed translation) | `sfnewton.cpp` |
+| `progress.py` | live one-line solver status on stderr (interactive terminals only) | — |
 | `output.py`, `runner.py` | .kal/.pro writers, start/var loops, search | `output.cpp`, `namics.cpp`, `variate.cpp` |
 
 Examples: new output properties = extend the tables in `System.get_value` /
@@ -252,6 +259,11 @@ run unchanged on the compiled Namics — compatibility works in both directions.
   your own geometry the same way. Profiles, theta, theta_exc, and moments
   follow the Namics definitions exactly (`LGrad1::Moment`, `WeightedSum`).
 - Default tolerance 1e-7, iterationlimit 1000, deltamax 0.1 (as in Namics).
+- In an interactive terminal a one-line solver status (stage, iteration,
+  max|g|, step) is redrawn on stderr during long solves. It appears only when
+  stderr is a terminal (redirected output and CI logs stay clean), never
+  touches stdout or the output files, and is switched off with the environment
+  variable `PYSFBOX_NO_PROGRESS=1`.
 
 ## Citing PySFBox
 
