@@ -777,11 +777,33 @@ def run_file(path, verbose=True):
                 s = seed if (seed is not None and seed.size == nv) else None
                 try:
                     return built.solve(x0=s, **newton)
-                except RuntimeError:
+                except NotImplementedError:
+                    # a gated feature/solver combination is not a failed
+                    # seed: a retry would raise the same, after a
+                    # misleading "seeded solve FAILED" line
+                    raise
+                except RuntimeError as e:
                     fb = (x_prev if x_prev is not None
                           and x_prev.size == nv else None)
+                    if fb is not None and s is not None \
+                            and np.array_equal(fb, s):
+                        raise                 # the retry would repeat it
                     if s is None and fb is None:
                         raise
+                    # NAME the retry: silently swallowing the seeded
+                    # attempt's failure can hide a wrong-branch result -- a
+                    # seeded solve that failed here and was retried COLD can
+                    # "converge in 1 iteration" onto the uniform fixed
+                    # point, which reads as success. A restricted system's
+                    # uniform state is an exact cold fixed point, so a cold
+                    # retry can look perfect while being a different branch.
+                    print(f"start {start_i}{tag}: seeded solve FAILED "
+                          f"({e}); retrying from "
+                          f"{'the previous solution' if fb is not None else 'COLD (x = 0)'}"
+                          + (" -- a cold retry of a restricted system can "
+                             "land on the UNIFORM branch and still report "
+                             "convergence; check the output profiles"
+                             if fb is None else ""))
                     return built.solve(x0=fb, **newton)
 
             system_prev_step = system     # previous step's/start's System
