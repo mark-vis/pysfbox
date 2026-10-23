@@ -49,6 +49,22 @@ def fd_jacobian(residual, x, g=None):
 # warnings already printed this process (avoid per-scan-step spam)
 _WARN_NOTES = set()
 
+
+def _layer_count(text, key):
+    """A layer count from the input: an integer (a whole float such as
+    '28.0' is fine), never silently truncated -- int(float('28.9999'))
+    used to give 28, and a sub-layer scan step (`step : -0.5`) solved the
+    9.5-layer rung as the 9-layer box and labelled it 9."""
+    if text is None:
+        raise ValueError(f"lat : {key} is required")
+    v = float(text)
+    if v != int(v) or v < 1:
+        raise ValueError(
+            f"lat : {key} : {text} must be a positive integer (sub-layer "
+            "box sizes on refined lattices are a pysfbox-dev extension; "
+            "this release steps whole layers)")
+    return int(v)
+
 # physical constants for electrostatics, copied VERBATIM from Namics
 # (namics.cpp:45-49) so converged charged states agree with the oracle
 E_CHARGE = 1.60217e-19          # elementary charge (C)
@@ -291,8 +307,8 @@ class System:
                     _WARN_NOTES.add(note)
                     print(f"  warning: {note}")
             self.lat = Lattice1D(
-                n_layers=int(float(substitute_aliases(
-                    last(lp, "n_layers"), settings))),
+                n_layers=_layer_count(substitute_aliases(
+                    last(lp, "n_layers"), settings), "n_layers"),
                 geometry=last(lp, "geometry", "planar"),
                 lattice_type=last(lp, "lattice_type", "simple_cubic"),
                 lowerbound=last(lp, "lowerbound", "mirror"),
@@ -773,7 +789,8 @@ class System:
                 raise ValueError(
                     f"gradients : {gradients} needs 'lat : ... : n_layers_"
                     f"{axis}'")
-            return int(float(substitute_aliases(v, settings)))
+            return _layer_count(substitute_aliases(v, settings),
+                                f"n_layers_{axis}")
 
         axes = ["x", "y"] + (["z"] if gradients == 3 else [])
         dims = tuple(nl(a) for a in axes)

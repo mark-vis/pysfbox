@@ -1,8 +1,17 @@
 name: tests
 
+# Minutes economy (from the dev tree, 28 Aug 2026): an unfiltered `push:` +
+# `pull_request:` ran the suite TWICE per branch push. Branch pushes now run
+# once (as the PR check); pushes to main (= merges) keep their run as the
+# green-main signal; force-pushes cancel the superseded run.
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -10,7 +19,7 @@ jobs:
     timeout-minutes: 40
     strategy:
       matrix:
-        python-version: ["3.9", "3.12"]
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

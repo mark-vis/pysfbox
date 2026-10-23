@@ -399,6 +399,15 @@ def _var_plan(settings):
         if step == 0:
             raise ValueError(f"{where} : step : 0 -- a linear scan needs a "
                              "nonzero step (its sign sets the direction)")
+        if (key == "lat" and prop.startswith("n_layers")
+                and not float(step).is_integer()):
+            # a fractional layer step used to run: the rung was truncated
+            # to the smaller box and labelled with it (10 / 9 / 9 rows)
+            raise ValueError(
+                f"{where} : step : {last(params, 'step')}: an {prop} step "
+                "must be a whole number of layers (sub-layer n_layers steps "
+                "on refined lattices are a pysfbox-dev extension; this "
+                "release steps whole layers)")
         n_steps = int(round((end - cur) / step)) + 1
         values = [cur + i * step for i in range(max(n_steps, 1))]
     return key, name, prop, values
