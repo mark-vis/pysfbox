@@ -6,9 +6,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # pinned: ubuntu-latest moved to 26.04 (Oct 2026), which has no
+    # setup-python build for 3.9 -- the project's floor (Python >= 3.9)
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.12"]
     steps:
