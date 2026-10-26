@@ -259,7 +259,7 @@ lat : L : n_layers : 100
 | `geometry` | see tables below | `planar` (1D) / `flat` (N-D) | coordinate system. `flat` and `planar` are synonyms. |
 | `lattice_type` | `simple_cubic`, `hexagonal` | `simple_cubic` | sets the neighbour-transition weight λ (`simple_cubic` → 1/6, `hexagonal` → 1/4). N-D accepts `simple_cubic` only. |
 | `lambda` | real in (0, ½) | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). Honoured on the 1-gradient lattice at `FJC_choices 3` only; with `FJC_choices > 3` or `gradients > 1` (whose stencils have no λ to replace) it raises. |
-| `n_layers` | integer | *(required, 1D)* | number of physical layers z = 1..n_layers (see FJC refinement). Missing raises. |
+| `n_layers` | integer | *(required, 1D)* | number of physical layers z = 1..n_layers (see FJC refinement). Missing or non-integral raises (e.g. an alias expression giving 20.5; a value is never truncated). |
 | `FJC_choices` | `3`, `5`, `7`, … | `3` | lattice refinement (freely-jointed-chain sub-layers). `3` = unrefined (fjc = 1). |
 | `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries; **ignored on planar lattices**, as in Namics — it no longer shifts the planar `.pro` x column), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. With a `mirror` lowerbound the inner mirror at r = offset folds the refined inward bonds symmetrically (since 7 Oct 2026; before, they broke detailed balance: θ of a restricted brush missed its input and GN/μ/F depended on the chain orientation). |
 | `bondlength` | float in 1e-12..1e-8 (m) | `5e-10` | segment bond length; **only consumed by charged systems** (Poisson prefactor). Out-of-range raises. |
@@ -1412,7 +1412,7 @@ var : mol-poly : end_value : 100
 | param | values | default | meaning |
 |---|---|---|---|
 | `scan` | a parameter name | — (required) | marks the block a scan; value = the parameter to sweep (`theta`, `phibulk`, `n`, `n_layers`, `chi_X`, `alphabulk`, …, or `NAME-value` for an alias) |
-| `step` | real (may be negative) | `1` | linear increment per step |
+| `step` | real (may be negative) | `1` | linear increment per step. An `n_layers` step must be a whole number of layers: a fractional step raises before the scan starts (it used to solve the truncated box and label the row with it). |
 | `end_value` | real | — (required) | last value of the sweep |
 | `scale` | `linear` / `exponential` | `linear` | `linear` = constant step; `exponential` = log-spaced (see below) |
 | `steps` | int | `1` | **exponential only**: number of steps per decade |

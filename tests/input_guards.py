@@ -345,6 +345,20 @@ with contextlib.redirect_stdout(buf):
 check("1-gradient kind on N-D cold-starts with a note",
       x0 is None and "cold-starts" in buf.getvalue(), buf.getvalue())
 
+print("[A7] layer counts and n_layers steps are whole layers")
+raises("non-integral n_layers", sub(WALL, "n_layers : 20", "n_layers : 20.5"),
+       ValueError, ["positive integer", "whole layers"])
+try:
+    runner._var_plan(read_input(write(WALL + """
+var : lat-flat : scan : n_layers
+var : lat-flat : step : -0.5
+var : lat-flat : end_value : 19
+"""))[-1])
+    check("fractional n_layers scan step raises", False, "planned")
+except ValueError as e:
+    check("fractional n_layers scan step raises",
+          "whole number of layers" in str(e), str(e))
+
 print("[X] the Namics characteristic function (sys : X) and compute_kJ0")
 WEAK = (WALL.replace("mon : A : chi_S : -1.5\n", "")
         + "state : A1 : mon : A\nstate : A1 : valence : 0\n"
