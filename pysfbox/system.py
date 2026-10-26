@@ -27,6 +27,32 @@ from .sfnewton import SFNewton
 # this close to a solution: a root finder started there stays on its branch
 POLISH_MAX_ERR = 1e-3
 
+# System._audit_solution (the post-solve input audit): a restricted
+# molecule's converged profile must integrate to its theta -- and each of its
+# segment types to its share -- to this relative accuracy (the composition
+# law makes it exact up to rounding, ~1e-13 in practice)
+THETA_ACCOUNTING_RTOL = 1e-8
+# bulk closure / bulk electroneutrality / bulk reaction equilibria: closed
+# forms evaluated at machine precision, so a deviation above this is a
+# bookkeeping disagreement, never rounding
+BULK_AUDIT_TOL = 1e-10
+
+
+class InputAuditError(RuntimeError):
+    """A converged state refused by the post-solve input audit
+    (System._audit_solution): the residual converged, but a requirement the
+    input states -- a restricted amount, incompressibility, an
+    electroneutral bulk or box, the declared bulk reaction equilibria --
+    does not hold in the state that would be written out (Invariant 2). NOT
+    a convergence failure: the same field gives the same violation on every
+    retry, so the runner's retry handlers (seeded retry, search probes)
+    re-raise it instead of treating it as a failed solve."""
+
+
+class MassAccountingError(InputAuditError):
+    """The audit's amount checks: a restricted molecule's profile does not
+    integrate to its amount (theta, or a segment type's share of it)."""
+
 
 def fd_jacobian(residual, x, g=None):
     """Forward-difference Jacobian J[i, j] = d g_i / d x_j of a residual
@@ -2196,12 +2222,13 @@ class System:
                 except (FloatingPointError, np.linalg.LinAlgError):
                     pass                      # keep the best iterate so far
         # sync all observables (phi, alpha, GN, ...) to the returned x
-        self.residual(x)
+        g = self.residual(x)
         self.iterations, self.residual_norm = it, err
         self._last_u = self.unpack(x)
         progress.clear()
         if ok:
             self._check_bulk_signs()
+            self._audit_solution(g)
         if not ok:
             raise RuntimeError(
                 f"no convergence in {it} iterations (max|g| = {err:.2e}); "
@@ -2229,6 +2256,269 @@ class System:
                 f"{nm.name} (phibulk {nm.phibulk:.3e}): the other bulk "
                 "charges already carry its sign. Choose a neutralizer of "
                 "the opposite charge, or add salt")
+
+    def _audit_solution(self, g=None):
+        """The POST-SOLVE INPUT AUDIT (Invariant 2): a converged residual
+        proves the field equations hold; this checks that the state that
+        is about to be written out also carries out what the input asked
+        for. Called on every accepted state (the cascade's converged exit)
+        and raises an InputAuditError (MassAccountingError for the amount
+        checks) that the runner's retry handlers re-raise.
+
+        `g` is the residual vector AT THE STORED STATE (the call that synced
+        the densities); with it the two residual-bounded checks run, against
+        RIGOROUS bounds derived from g itself (no tolerance fudge: a
+        violation is an accounting disagreement, not a loose solve). Without
+        it (unit use) only the amount and bulk checks run. Every check is a
+        sum over profiles that already exist: no propagation, no residual
+        evaluation.
+
+        What is checked, and why each is NOT implied by the residual
+        (requirements the residual DOES imply are not re-checked):
+          amounts       restricted theta; each segment type's share
+                        theta*n_t/N -- the composition law makes these
+                        exact for ANY field, the residual never sees them
+                        (alpha absorbs a lost density)
+          bulk          sum of the per-segment bulk split = 1; bulk
+                        electroneutrality when a neutralizer is declared;
+                        the declared bulk reaction equilibria -- three
+                        closed forms the residual consumes but never tests
+          incompress.   sum over MOLECULES (+ frozen) phi = 1 on every free
+                        site, |1/phi_T - 1| <= max|g|/k -- the residual
+                        implies it for ITS phi_T (the segment sums); this
+                        tests the molecule-level densities the output layer
+                        prints against it
+          Gauss         the box incl. electrode charge is neutral to the
+                        bound the free Poisson rows imply -- holds only if
+                        the discrete Poisson stencil is flux-conservative
+                        (telescoping faces), which the residual cannot see
+        """
+        self._audit_amounts()
+        self._audit_bulk()
+        if g is not None:
+            S, M = len(self.it_species), self.lat.M
+            g = np.asarray(g, dtype=float)
+            self._audit_incompressibility(g[:S * M])
+            if self.charged:
+                self._audit_gauss(g[S * M:(S + 1) * M])
+
+    def _audit_fail(self, check, text, cls=None):
+        progress.clear()
+        raise (cls or InputAuditError)(f"input audit [{check}]: {text}")
+
+    def _audit_amounts(self):
+        """Restricted amounts (part of _audit_solution). The composition
+        law normalises a restricted molecule to theta EXACTLY for any
+        field -- the identity sum_z L Gf(s) Gb(s)/G1 = GN holds per
+        segment -- so a deviation is never physics: it means density was
+        lost (or invented) inside compute_phi while the solver's alpha
+        quietly absorbed it. The composition-law overflow cap used to do
+        exactly that (see model._composition_law); the remaining ways are a
+        propagator row whose dynamic range exceeds double precision (its far
+        tail underflows) and the overflow guard at the exact per-row bound,
+        which only a wild transient reaches. The same identity fixes each
+        segment type's share (theta n_t / N: a density moved between types
+        leaves theta intact). m.theta is the value the composition law was
+        given -- the input theta, or a var/search step's value -- so solver
+        roles need no exemption."""
+        lat = self.lat
+        cause = ("The likely cause is a chain whose statistical weight "
+                 "spans more than double precision's ~1e308 range inside "
+                 "ONE propagator row (a long, strongly charged chain in a "
+                 "large low-salt cell; extreme adsorption): its far tail "
+                 "underflows. Try a smaller cell, more salt or a shorter "
+                 "chain; please report the input")
+        for m in self.molecules.values():
+            if m.freedom != "restricted" or not m.theta > 0:
+                continue
+            tol = THETA_ACCOUNTING_RTOL * m.theta
+            th = float(m.get_theta())
+            if not abs(th - m.theta) <= tol:
+                self._audit_fail(
+                    "restricted amount",
+                    f"mol {m.name}: the converged profile integrates to "
+                    f"theta = {th:.10g}, not the restricted amount "
+                    f"{m.theta:.10g} (relative deviation "
+                    f"{(th - m.theta) / m.theta:+.2e}). The residual "
+                    "converged, but density was lost inside the "
+                    "composition law, so every observable of this state "
+                    "is wrong. " + cause, MassAccountingError)
+            counts = {}
+            for s in m.seq:
+                counts[s.name] = counts.get(s.name, 0) + 1
+            for mon, cnt in counts.items():
+                want = m.theta * cnt / m.N
+                prof = m.phi_per_seg.get(mon)
+                got = 0.0 if prof is None else float(lat.weighted_sum(prof))
+                if not abs(got - want) <= tol:
+                    self._audit_fail(
+                        "segment amount",
+                        f"mol {m.name}, mon {mon}: its {cnt} segment(s) "
+                        f"per chain integrate to {got:.10g}, not the share "
+                        f"{want:.10g} of theta = {m.theta:.10g} that "
+                        f"{cnt} of the chain's {m.N} segments must carry "
+                        f"(relative deviation {(got - want) / m.theta:+.2e} "
+                        "of theta). Density moved between segment types "
+                        "inside the composition law. " + cause,
+                        MassAccountingError)
+
+    def _audit_bulk(self):
+        """Bulk closure, bulk electroneutrality (neutralizer declared) and
+        the bulk reaction equilibria (part of _audit_solution). Each is a
+        closed form the residual consumes but never tests: _update_bulk
+        sets the solvent (and neutralizer) by closure from the MOLECULE
+        totals and their charge_per_seg, while the residual's chi
+        references and every thermodynamic output read the PER-SEGMENT
+        split phibulk_seg -- a disagreement only this cross-check sees."""
+        tot = float(sum(self.phibulk_seg.values()))
+        if not abs(tot - 1.0) <= BULK_AUDIT_TOL:
+            split = ", ".join(f"{k} {v:.6g}" for k, v in
+                              self.phibulk_seg.items() if v != 0.0)
+            self._audit_fail(
+                "bulk closure",
+                f"the per-segment bulk volume fractions sum to {tot:.12g}, "
+                f"not 1 ({split}); the molecule-level bulk "
+                f"(solvent {self.solvent.phibulk:.6g} by closure) and its "
+                "per-segment split disagree, so the chi references, mu and "
+                "Omega describe a different reservoir than the input. "
+                "Please report the input")
+        if self.charged and self.neutralizer is not None:
+            terms = [self.phibulk_seg.get(s.name, 0.0) * s.mean_valence()
+                     for s in self.it_segs]
+            qb = float(sum(terms))
+            scale = float(sum(abs(t) for t in terms))
+            if not abs(qb) <= BULK_AUDIT_TOL * scale + 1e-15:
+                self._audit_fail(
+                    "bulk electroneutrality",
+                    f"the bulk carries a net charge {qb:+.3e} (per site; "
+                    f"sum of |charges| {scale:.3e}) although the "
+                    f"neutralizer {self.neutralizer.name} is declared to "
+                    "cancel it: the neutralizer's closure (molecule "
+                    "charge_per_seg) and the per-segment bulk split "
+                    "disagree. Please report the input")
+        if not self.reactions:
+            return
+        alpha = {}
+        for seg in self.segments.values():
+            if not seg.states:
+                continue
+            ssum = float(sum(st.alphabulk for st in seg.states))
+            if not abs(ssum - 1.0) <= BULK_AUDIT_TOL:
+                self._audit_fail(
+                    "bulk state fractions",
+                    f"mon {seg.name}: the bulk state fractions sum to "
+                    f"{ssum:.12g}, not 1. Please report the input")
+            alpha.update({st.name: st.alphabulk for st in seg.states})
+        ln10 = np.log(10.0)
+        for r in self.reactions:
+            with np.errstate(divide="ignore"):
+                res = r.pK * ln10 + sum(
+                    sgn * nu * np.log(alpha[nm])
+                    for sgn, side in ((1, r.products), (-1, r.reactants))
+                    for nu, nm in side)
+            if not abs(res) <= 1e-8:
+                self._audit_fail(
+                    "bulk reaction equilibrium",
+                    f"reaction {r.name}: the bulk state fractions miss the "
+                    f"declared pK = {r.pK:g} by {res / ln10:+.3e} pK units "
+                    f"({', '.join(f'{k} {v:.6g}' for k, v in alpha.items())}"
+                    "). The bulk ionisation was solved for different "
+                    "parameters than the ones this state used (a scan "
+                    "step that changed a pK or alphabulk without "
+                    "re-solving?). Please report the input")
+
+    def _audit_incompressibility(self, g_sp):
+        """sum over molecules (+ frozen) of phi = 1 on every free site
+        (part of _audit_solution). The species rows of the residual are
+        g_i = k (d_i - mean d + 1/phi_T - 1) (k = ksam, d the field
+        mismatch), so sum_i g_i = S k (1/phi_T - 1) EXACTLY: the
+        residual bounds k |1/phi_T - 1| by max|g| for ITS phi_T, the
+        segment-type sums. The same must hold for the molecule-level
+        densities the .pro/.kal print (and every thermodynamic sum reads);
+        a molecule whose m.phi disagrees with its phi_per_seg, a density
+        missing from the segment sums, or a free site no material reaches
+        breaks it here and nowhere else."""
+        lat = self.lat
+        free = (self.ksam > 0) & lat.interior
+        if not np.any(free):
+            return
+        pt = sum((np.asarray(m.phi, dtype=float)
+                  for m in self.molecules.values()), np.zeros(lat.M))
+        for s in self.frozen:
+            pt = pt + s.phi
+        pt, k = pt[free], self.ksam[free]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dev = np.where(pt > 0, k * np.abs(1.0 / pt - 1.0), np.inf)
+        bound = 2.0 * float(np.max(np.abs(g_sp))) + 1e-12
+        if np.all(dev <= bound):         # (a NaN density fails here too)
+            return
+        j = int(np.argmax(np.where(np.isfinite(dev), dev, np.inf)))
+        site = int(np.where(free)[0][j])
+        self._audit_fail(
+            "incompressibility",
+            f"the molecule densities (+ frozen) sum to {pt[j]:.12g} at free "
+            f"site {site} (flat index), not 1; the converged residual "
+            f"(max|g| = {float(np.max(np.abs(g_sp))):.2e}) allows at most "
+            f"|1/phi_T - 1| = {bound / k[j]:.2e} there. "
+            "The molecule-level densities (what the .pro and every "
+            "thermodynamic sum read) disagree with the segment densities "
+            "the residual iterated on. Please report the input")
+
+    def _audit_gauss(self, g_psi):
+        """Electroneutrality of the whole box (part of _audit_solution):
+        sum over the interior of the solver's charge q (fixed/frozen
+        charges included), plus the charge the electrodes took up from
+        their battery (q_electrode), must vanish to the bound the FREE
+        Poisson rows imply. With psi ghosts always mirror (no flux through
+        the outer faces), summing the free rows D_x g_x = (flux in - flux
+        out) - C q_x telescopes to -C * (net charge) -- the electrode rows'
+        flux is exactly what q_electrode books -- PROVIDED each interior
+        face carries the same coefficient seen from both sides (a
+        flux-conservative stencil). A face-frame slip (curved faces placed
+        off the propagator's shells) or a charge the Poisson source does not
+        see breaks it; the residual cannot."""
+        lat = self.lat
+        M, fjc = lat.M, lat.fjc
+        q, eps, psi = self.q, self.eps_prof, self.psi
+        psib = lat.set_mirror_bounds(psi)
+        iv = slice(fjc, M - fjc)
+        em, e0, ep = (eps[fjc - 1:M - fjc - 1], eps[iv],
+                      eps[fjc + 1:M - fjc + 1])
+        if self.geom == "planar":
+            D = (em + e0) + (e0 + ep)
+            C = self.C_psi * 2.0 / fjc ** 2
+            w = np.ones(M - 2 * fjc)
+        else:
+            rm, rp = self.r_minus[iv], self.r_plus[iv]
+            if self.geom == "cylindrical":
+                D = rm * (em + e0) + rp * (e0 + ep)
+                C = self.C_psi / np.pi
+            else:
+                D = rm ** 2 * (em + e0) + rp ** 2 * (e0 + ep)
+                C = self.C_psi / (2.0 * np.pi) * fjc
+            w = np.asarray(lat.L, dtype=float)[iv]
+        free = np.ones(M - 2 * fjc, dtype=bool)
+        q_el = 0.0
+        if getattr(self, "fixedPsi0", False):
+            free = ~self.psiMask[iv]
+            q_el = float(np.sum(self.q_electrode))
+        qw = q[iv] * w
+        net = float(qw.sum()) + q_el
+        bound = float(np.sum((D * np.abs(g_psi[iv]))[free])) / C
+        scale = (float(np.sum(np.abs(qw))) + abs(q_el)
+                 + float(np.sum(D * np.abs(psib[iv]))) / C)
+        if abs(net) <= bound + 1e-11 * scale + 1e-14:
+            return
+        self._audit_fail(
+            "electroneutrality",
+            f"the box carries a net charge {net:+.3e} (charge per site, "
+            f"summed{'' if self.geom == 'planar' else ' with shell volumes L'}"
+            f"; electrode charge {q_el:+.3e} included), but the converged "
+            f"Poisson rows allow at most {bound:.3e}: with mirror psi "
+            "boundaries a converged box is neutral exactly when the "
+            "discrete Poisson stencil conserves flux, so the stencil (face "
+            "coefficients / face radii) or the charge bookkeeping is "
+            "inconsistent. Please report the input")
 
     def _solve_anderson(self, x0, tolerance, iterationlimit, deltamax,
                         m_anderson, warmup, verbose):

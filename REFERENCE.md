@@ -157,8 +157,11 @@ the new grid; when a start adds or removes a species on the same grid, the
 potentials are copied by species name and the new species start at u = 0
 (Namics does the same). A start that cannot be warm-started (the grid AND the
 unknowns' layout changed together, or `FJC_choices` changed) says so and starts
-cold. From the third scan step a secant extrapolation predicts the next
-step. These only shape the initial guess and cannot change what a converged
+cold. Large cells converge more easily from below: if a cold start of a
+big box stalls (e.g. a large sphere around a long charged chain at low
+salt), run the `n_layers` ladder from the smallest cell up, so each step
+starts from the remapped previous solution. From the third scan step a
+secant extrapolation predicts the next step. These only shape the initial guess and cannot change what a converged
 solution satisfies — but where several solutions exist (a symmetry-broken slab
 vs the uniform root) the seed picks the branch. For self-assembling structures
 an analytic starting field helps:
@@ -177,7 +180,13 @@ redirected/CI output, never touches stdout or the output files, and
 renormalisation, so long or strongly adsorbing chains cannot overflow to
 `NaN` — there is **no `overflow_protection` switch to set** (it is always on).
 This is a hard project invariant; a chain that overflowed in classic sfbox
-simply propagates finitely here.
+simply propagates finitely here. The renormalisation bounds each propagator
+row's maximum, not its tail: a chain whose statistical weight varies by more
+than double precision's range (~1e308) *within* one row (a long, strongly
+charged chain pinned in a large low-salt cell) fails loudly, with
+`propagator died at segment s` and that explanation, or, if only part of the
+tail is lost, with the input audit's restricted-amount error below; a
+smaller cell or more salt helps.
 
 **Unknown keywords, unknown output, non-convergence.**
 
@@ -198,6 +207,30 @@ simply propagates finitely here.
   start, suggests a smaller `super_deltamax` when the probe step was large
   (the bracket probes by a factor 1 + `super_deltamax`), and otherwise points
   at an unreachable/non-monotone target.
+- **Post-solve input audit.** A converged residual proves the field
+  equations hold, not that every requirement of the input does, so every
+  accepted state is audited before it is written out, and a state that
+  fails is **refused** with an `input audit [<check>]` error that names
+  the molecule/segment/site, the expected and the found value and the
+  likely cause. Scans and searches do not retry such a state.
+  Requirements the residual already enforces (`constraint : delta`: its
+  residual rows; `free` molecules' `phibulk`, pinned/frozen ranges: built
+  into the weights) are not re-checked. The checks (all sums over existing
+  profiles, negligible cost):
+  - *restricted amount*: each `restricted` molecule integrates to its
+    `theta` (relative deviation > 1e-8 refused; the density was lost
+    inside the composition law, the propagator-tail case above); also
+    each segment type to its share theta·n_t/N;
+  - *bulk*: the per-segment bulk volume fractions sum to 1; with a
+    `neutralizer` the bulk is electroneutral; the bulk state fractions
+    satisfy every declared `reaction` pK and sum to 1 per mon (all to
+    1e-10, closed forms);
+  - *incompressibility*: the molecule densities plus the frozen ones sum
+    to 1 on every free site, to the bound the converged residual implies;
+  - *electroneutrality* (charged systems): the box, including any fixed
+    and frozen charges and the charge a fixed-ψ0 electrode takes up, is
+    neutral to the bound the converged Poisson rows imply (exact for a
+    flux-conservative stencil with the mirror ψ boundaries).
 
 Convergence quality is also visible in the run log, which prints
 `converged in <it> iterations, max|g| = …, max|phi_T-1| = …` per calculation.
@@ -532,12 +565,19 @@ state explicitly, and states inherit their parent mon's χ unless overridden.
 | `epsilon` | real | `80` | relative permittivity of this segment (water-like default) |
 | `e.psi0/kT` | real | — | fixed dimensionless surface potential (electrode); requires `freedom : frozen` |
 
-- Without a `neutralizer` the declared bulk must be electroneutral
-  (|Σ charge·φ<sub>b</sub>| ≤ 1e-4 over the free molecules and the solvent) and
-  no unpinned `restricted` molecule may be charged, else `ValueError` naming
-  `freedom : neutralizer` (Namics' rule). A converged state whose bulk needs a
-  **negative** neutralizer fraction raises too (pick a neutralizer of the
-  opposite charge, or add salt).
+- **Bulk electroneutrality.** With a `neutralizer` (one molecule with
+  `freedom : neutralizer`) its bulk fraction is set by electroneutrality at
+  every iteration, so the declared free bulk may carry net charge and an
+  unpinned (floating) `restricted` molecule may be charged: its implied bulk
+  charge, which depends on the field, is neutralised along with the rest.
+  Without a neutralizer nothing enforces electroneutrality, so two inputs
+  raise `ValueError` naming `freedom : neutralizer` (Namics' rule): a declared
+  bulk with net charge (|Σ charge·φ<sub>b</sub>| > 1e-4 over the free molecules
+  and the solvent), and an unpinned `restricted` molecule with any charged
+  segment or state. Pinned and grafted `restricted` molecules have no bulk and
+  are allowed either way. A converged state whose bulk needs a **negative**
+  neutralizer fraction raises too (pick a neutralizer of the opposite charge,
+  or add salt).
 - A system is treated as **charged** if any segment (or any of its states) has a
   nonzero `valence`, or any segment sets `e.psi0/kT`. Charged systems require
   `gradients : 1` (`charged systems (valence / e.psi0/kT) need gradients : 1`)
