@@ -193,6 +193,160 @@ U_CLIP = 200.0
 # Lazy-renormalisation drift budget for the propagators: a stored row is
 # renormalised only when its maximum leaves [1/BIG, BIG] (see compute_phi).
 BIG = 1e30
+def _propagator_death(name, s, m):
+    """The message of a propagator row that died (max 0 or not finite)."""
+    what = "underflowed to 0" if np.isfinite(m) else "overflowed"
+    return (
+        f"mol {name}: propagator died at segment {s} (the row {what} at "
+        "every site the segment can occupy). Unless this is a wild solver "
+        "transient (the cascade retries; then a smaller deltamax helps), the "
+        "chain's statistical weight spans more than double precision's "
+        "~1e308 range INSIDE one propagator row: lazy renormalisation keeps "
+        "a row's maximum finite, not its far tail. Typical case: a long, "
+        "strongly charged chain in a large low-salt cell, whose own field "
+        "makes the weight near the chain e^-700 below the weight at the "
+        "field-free cell edge -- then a pinned or masked segment finds only "
+        "zeros. Try a smaller cell, more salt, or a shorter chain.")
+
+
+def _u_clip_of(G1, mons):
+    """The 1/G1 headroom a composition law must allow for these segment
+    types: U_CLIP (G1 = exp(-clip(u, +-U_CLIP)) * mask >= exp(-U_CLIP)
+    wherever it is positive), unless some positive G1 is smaller -- a
+    delta-modified G1 (exp(-+beta) on top of the clip), a
+    fractional site mask (partially frozen sites), many internal states
+    with tiny bulk fractions. Then its own -ln min G1, so the overflow
+    bound holds for every G1 actually divided by (26 Oct 2026 review).
+    Returns the constant U_CLIP itself in the normal case (the caps stay
+    bit-identical)."""
+    lo = np.inf
+    for mon in set(mons):
+        g = G1[mon]
+        pos = g[g > 0]
+        if pos.size:
+            lo = min(lo, float(pos.min()))
+    if not lo < np.exp(-U_CLIP):
+        return U_CLIP
+    return float(-np.log(lo))
+
+
+def _composition_caps(N, u_clip):
+    """(cap, slack) of a composition law summing N terms whose result is
+    divided by a G1 >= exp(-u_clip) (u_clip = 0: no division, tree nodes).
+    `slack` is the overflow headroom of one term exp(e) * P(z), P the
+    product of stored rows: exp(slack) * exp(u_clip) * N < DBL_MAX ~
+    exp(709) with a margin of 10. `cap` = slack - 2 ln BIG is the GLOBAL
+    bound on e, safe for every row because a stored product is <= BIG^2;
+    rows within it run the classic scalar-weight path. The expression order
+    is the historical cap's, so `cap` is bit-identical to it."""
+    cap = 709.0 - 2.0 * np.log(BIG) - u_clip - np.log(N) - 10.0
+    slack = 709.0 - u_clip - np.log(N) - 10.0
+    return cap, slack
+
+
+def _beyond_rows(e, A, B, slack):
+    """Composition-law terms exp(e[k]) * A[k] * B[k] for k rows BEYOND the
+    global cap (e (k,), A/B (k, M) nonnegative stored rows), exact and
+    overflow-safe: each term is clipped only at its EXACT bound
+    e + ln max_z(A B) <= slack, which a physical state never reaches
+    (phi <= 1 and 1/G1 <= exp(U_CLIP) keep e + ln max_z(A B) <= U_CLIP,
+    and <= 0 for a tree node, far below slack ~ 700 - U_CLIP - ln N); only
+    a wild transient can, and there the clip is an overflow guard, not a
+    truncation of real mass.
+
+    Two tiers. (1) Scalar weight: exp(ee) * (A B) with the bounded
+    exponent ee <= slack -- one product per site, like the classic path.
+    Its only inexactness is the underflow of the stored product's tail,
+    absolute error <= exp(slack) * 2^-1074 per term: below 1e-19 in phi
+    even after N terms and the 1/G1 division. (2) Rows whose exponent
+    still exceeds slack -- their stored product max_z(A B) is < 1, it may
+    even underflow to zero although the physical term is O(1) -- run per
+    site in the log domain, exp(e + ln A + ln B), bounded by the per-site
+    maximum of ln A + ln B (NOT by ln max_z(A B), which is -inf once the
+    product underflows, 26 Oct 2026 review). Zeros stay exact zeros."""
+    P = A * B
+    w, lg = _beyond_weights(e, P, slack)
+    out = w[:, None] * P
+    if lg.size:
+        out[lg] = _log_tier(e[lg], A[lg], B[lg], slack)
+    return out
+
+
+def _beyond_weights(e, P, slack):
+    """Tier (1) of _beyond_rows: the scalar weights exp(min(e, bound)) of
+    rows beyond the global cap, bound = slack - ln max_z P (P the stored
+    product rows), and the indices of the rows that need tier (2) (their
+    bounded exponent still exceeds slack; weight 0 here)."""
+    with np.errstate(divide="ignore"):
+        lnp = np.log(P.max(axis=1))             # -inf: product underflowed
+    ee = np.minimum(e, slack - lnp)
+    lg = np.flatnonzero(ee > slack)
+    w = np.exp(np.minimum(ee, slack))
+    w[lg] = 0.0
+    return w, lg
+
+
+def _log_tier(e, A, B, slack):
+    """Tier (2) of _beyond_rows: exp(e + ln A + ln B) per site, bounded at
+    e + max_z(ln A + ln B) <= slack."""
+    with np.errstate(divide="ignore"):
+        t = np.log(A) + np.log(B)
+    e2 = np.minimum(e, slack - t.max(axis=1))
+    return np.exp(e2[:, None] + t)
+
+
+def _composition_law(runs, e, Gf, Gb, N, u_clip=U_CLIP):
+    """Linear-chain composition law before the 1/G1 division:
+    per_seg[mon] = sum_{s in mon's runs} exp(e[s]) * Gf~[s] * Gb~[s], with
+    e[s] = lnC + Lf[s] + Lb[s] the per-segment log prefactor and Gf~/Gb~
+    the stored (renormalised) propagator rows.
+
+    Overflow safety (invariant 4): every intermediate stays below DBL_MAX
+    ~ exp(709) even on the wildest transient. Rows within the GLOBAL cap
+    (_composition_caps: stored products <= BIG^2, 1/G1 <= exp(U_CLIP), at
+    most N terms) take the classic path -- the scalar weight
+    W[s] = exp(e[s]) and one weighted matrix product per same-type run,
+    bit-identical to the code before 26 Oct 2026, which applied this cap to
+    EVERY row.
+
+    That global cap is NOT a bound on physical states: it assumes the worst
+    case max_z Gf~[s] Gb~[s] = BIG^2, but the renormalisation only bounds a
+    row's MAXIMUM, not where it sits. When the forward and backward rows
+    peak in different places -- a long, strongly self-charged chain pinned
+    in the centre of a large field-free cell; a dilute graft inside a
+    crowded slab -- max_z Gf~ Gb~ is tiny and the physical W exceeds the
+    cap (e^640 vs e^356 for the 170-mer of tests/composition_cap_slab.in).
+    The old clip there silently removed mass: phi too small, alpha absorbed
+    it, the residual converged and theta came out wrong (28 % low in that
+    test). Rows beyond the
+    global cap therefore go to _beyond_rows: a scalar weight bounded by the
+    exact per-row overflow bound, and per site in the log domain where even
+    that does not suffice (the stored product underflows), so neither the
+    scalar weight nor an underflowing product can lose mass. Cost: zero on
+    the classic path; one product per site of the rows beyond it, logs only
+    for rows whose exponent exceeds the per-row headroom. u_clip: the 1/G1
+    headroom (_u_clip_of)."""
+    cap, slack = _composition_caps(N, u_clip)
+    W = np.exp(np.clip(e, -745.0, cap))
+    hi = np.flatnonzero(e > cap)
+    lg = hi[:0]
+    if hi.size:
+        # tier (1) folds into the matrix products below (their weight is
+        # bounded at the exact per-row bound); tier (2) rows get weight 0
+        # there and are added from the log domain
+        W[hi], k = _beyond_weights(e[hi], Gf[hi] * Gb[hi], slack)
+        lg = hi[k]
+    per_seg = {}
+    for mon, run in runs:
+        contrib = W[run] @ (Gf[run] * Gb[run])
+        per_seg[mon] = per_seg.get(mon, 0.0) + contrib
+    if lg.size:
+        rows = _log_tier(e[lg], Gf[lg], Gb[lg], slack)
+        for mon, run in runs:
+            k = (lg >= run.start) & (lg < run.stop)
+            if k.any():
+                per_seg[mon] = per_seg[mon] + rows[k].sum(axis=0)
+    return per_seg
 
 
 # ---------------------------------------------------------------- molecules
@@ -599,8 +753,7 @@ class Molecule:
             g = lat.propagate(out[s + step], Gseq[s])
             m = g.max()
             if not np.isfinite(m) or m <= 0:
-                raise FloatingPointError(
-                    f"mol {self.name}: propagator died at segment {s}")
+                raise FloatingPointError(_propagator_death(self.name, s, m))
             if m > BIG or m < 1.0 / BIG:
                 g /= m
                 ln_applied += np.log(m)
@@ -661,20 +814,12 @@ class Molecule:
             return self.phi
 
         # ---- composition law, one weighted matrix product per run ----------
-        # Overflow safety (invariant 4): the scalar weights W are capped so
-        # that even on the wildest transient every intermediate stays below
-        # DBL_MAX ~ exp(709): stored rows are within [1/BIG, BIG] (so a
-        # product Gf*Gb <= BIG^2), 1/G1 <= exp(U_CLIP) wherever G1 > 0, and a
-        # run sums at most N such terms -- hence the cap
-        #     709 - 2 ln BIG - U_CLIP - ln N - margin.
-        # Legitimate converged states sit orders of magnitude below the cap
-        # (their W is at most ~BIG^2 exp(U_CLIP) since phi is O(1)).
-        cap = 709.0 - 2.0 * np.log(BIG) - U_CLIP - np.log(N) - 10.0
-        W = np.exp(np.clip(lnC + Lf + Lb, -745.0, cap))
-        per_seg = {}
-        for mon, run in self._type_runs:
-            contrib = W[run] @ (Gf[run] * Gb[run])
-            per_seg[mon] = per_seg.get(mon, 0.0) + contrib
+        # (overflow safety and the rows beyond the global cap: see
+        # _composition_law -- a converged state CAN need a scalar weight far
+        # above that cap, so those rows run at their exact per-row bound)
+        per_seg = _composition_law(
+            self._type_runs, lnC + Lf + Lb, Gf, Gb, N,
+            _u_clip_of(G1, [mon for mon, _ in self._type_runs]))
         with np.errstate(divide="ignore", invalid="ignore"):
             for mon in per_seg:
                 g1 = G1[mon]
@@ -745,15 +890,17 @@ class Molecule:
             self.phi = np.zeros(lat.M)
             return self.phi
 
-        # down sweep + density accumulation (same overflow cap as the linear
-        # composition law; up*<down> <= BIG^2 and no 1/G1 factor here).
-        # Repeated identical subtrees (comb teeth, star/dendrimer arms) are
-        # AGGREGATED: the internal down operators are linear in the incoming
+        # down sweep + density accumulation (the linear composition law's
+        # overflow handling, _composition_law, per node: up*<down> <= BIG^2
+        # and no 1/G1 factor here; a node beyond the global cap runs at its
+        # exact bound, _beyond_rows). Repeated identical subtrees (comb
+        # teeth, star/dendrimer arms) are AGGREGATED: the internal down
+        # operators are linear in the incoming
         # message and shared across instances, so the instances' weighted
         # messages are summed and each distinct subtree is walked ONCE (same
         # fixed point; summation order differs from the naive walk at the
         # 1e-16 level). Trees without repeats take the exact original path.
-        cap = 709.0 - 2.0 * np.log(BIG) - np.log(N) - 10.0
+        cap, slack = _composition_caps(N, 0.0)
         adn = [None] * n                        # <down[i]>; ones at the root
         adn[0] = np.ones(lat.M)
         down_log = np.zeros(n)
@@ -773,9 +920,14 @@ class Molecule:
                 a[0] = a[0] + d_avg * np.exp(dlg - a[1])
 
         def visit(i):
-            W = np.exp(min(lnC + up_log[i] + down_log[i], cap))
-            per_seg[nodes[i].mon] = (per_seg[nodes[i].mon]
-                                     + W * (up[i] * adn[i]))
+            e = lnC + up_log[i] + down_log[i]
+            if e > cap:                         # beyond the global cap
+                rho = _beyond_rows(np.array([e]), up[i][None],
+                                   adn[i][None], slack)[0]
+            else:
+                W = np.exp(min(e, cap))
+                rho = W * (up[i] * adn[i])
+            per_seg[nodes[i].mon] = per_seg[nodes[i].mon] + rho
             ks = kids[i]
             if not ks:
                 return

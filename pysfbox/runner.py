@@ -7,7 +7,7 @@ import numpy as np
 from .inputreader import (_copy, _suggest, get_blocks, last, read_input,
                           set_value)
 from .output import kal_path, pro_path, write_kal, write_pro
-from .system import System
+from .system import InputAuditError, System
 
 
 def _num(s):
@@ -531,6 +531,10 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
         # both, cheapest first
         try:
             return resid(X)
+        except InputAuditError:
+            # a refused state (the post-solve input audit) is not an SCF
+            # failure: pass its message through
+            raise
         except RuntimeError as e:
             raise RuntimeError(
                 f"{label} search: the inner SCF did not converge at search "
@@ -777,10 +781,11 @@ def run_file(path, verbose=True):
                 s = seed if (seed is not None and seed.size == nv) else None
                 try:
                     return built.solve(x0=s, **newton)
-                except NotImplementedError:
-                    # a gated feature/solver combination is not a failed
-                    # seed: a retry would raise the same, after a
-                    # misleading "seeded solve FAILED" line
+                except (NotImplementedError, InputAuditError):
+                    # a gated feature/solver combination, or a refused
+                    # state (the post-solve input audit), is not a failed
+                    # seed: a retry would raise the same, after a misleading
+                    # "seeded solve FAILED" line
                     raise
                 except RuntimeError as e:
                     fb = (x_prev if x_prev is not None

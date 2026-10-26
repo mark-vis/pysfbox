@@ -232,7 +232,10 @@ validation set, including the extreme corner — very strong adsorption of very 
 chains (the shipped `homopolymer_adsorption.in`, N = 10000, chi_Si = -6)
 converges via the extended rescue and matches the compiled Namics exactly.
 Genuine non-convergence still fails *gracefully* (a clear "no convergence"
-message with actionable advice, never a wrong number). `var` scans
+message with actionable advice, never a wrong number), and a converged
+state is audited before it is written out: one whose restricted amounts,
+bulk composition, incompressibility or electroneutrality do not add up is
+refused with an `input audit` error (see REFERENCE.md). `var` scans
 warm-start each step from the previous solution — ramping a parameter
 (e.g. a co-solvent) is the intended way into hard regimes.
 

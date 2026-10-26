@@ -1,0 +1,58 @@
+// Regression (26 Oct 2026): the composition-law overflow cap must never
+// truncate a restricted molecule's mass (model._composition_law). Neutral,
+// 1-gradient, two dilute grafted molecules (theta 0.01 each, graft
+// segments pinned in layer 1) inside an 85-layer
+// CROWDED slab: single-segment B pinned in layers 1-85 at phi 0.95, so every
+// A/C step in the slab costs ~ -ln 0.05 + 0.95 chi ~ 6 kT, while layers
+// 86-110 are pure solvent. The stored propagator rows peak in the field-free
+// solvent, the chains' density sits at the wall, so max_z(Gf~ Gb~) is tiny
+// and the composition-law exponent e_s = lnC + Lf[s] + Lb[s] climbs far
+// above the GLOBAL cap 709 - 2 ln BIG - U_CLIP - ln N - 10 (~356 for the
+// linear 170-mer, e up to ~640; ~556 for the 91-node tree, e up to ~585).
+// The code before the fix clipped those rows: alpha absorbed the missing
+// density, the residual converged and mol:lin:theta / mol:tree:theta came
+// out 28 % / 11 % low (0.007235 / 0.008901 with pysfbox 1.4.2). Fixed:
+// theta = 0.01 to ~1e-14.
+
+lat : flat : geometry : flat
+lat : flat : gradients : 1
+lat : flat : n_layers : 110
+lat : flat : lattice_type : simple_cubic
+lat : flat : lowerbound : mirror
+lat : flat : upperbound : mirror
+
+mon : B : freedom : pinned
+mon : B : pinned_range : 1;85
+mon : W : freedom : free
+mon : G : freedom : pinned
+mon : G : pinned_range : 1;1
+mon : H : freedom : pinned
+mon : H : pinned_range : 1;1
+mon : A : freedom : free
+mon : A : chi_B : 3
+mon : C : freedom : free
+mon : C : chi_B : 4
+
+mol : crowd : composition : (B)1
+mol : crowd : freedom : restricted
+mol : crowd : theta : 80.75
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+mol : lin : composition : (G)1(A)169
+mol : lin : freedom : restricted
+mol : lin : theta : 0.01
+mol : tree : composition : (H)1(C)30[(C)30](C)30
+mol : tree : freedom : restricted
+mol : tree : theta : 0.01
+
+newton : isaac : tolerance : 1e-9
+newton : isaac : iterationlimit : 10000
+
+output : kal : append : false
+kal : mol : * : theta
+kal : mol : lin : mu
+kal : mol : tree : mu
+kal : sys : flat : grand_potential
+kal : sys : flat : free_energy
+output : pro : append : false
+pro : mol : * : phi
