@@ -114,8 +114,10 @@ repeat, e.g. several output-spec lines); normal settings use override semantics
 (the last value), output specs use the whole list.
 
 **`alias` (`#N#` substitution)** — `alias : X : value : v` defines a
-textual substitution: every `#X#` (in a composition string, or an `n_layers`
-value) is replaced by `v` before that field is parsed. Useful for a chain
+textual substitution: every `#X#` in a field of the substitution scope (the
+exact list is under `alias` in "Scans, search, ranges, and aliases"; in short a
+composition string, an `n_layers` value, and the `sys` and `newton` values) is
+replaced by `v` before that field is parsed. Useful for a chain
 length used in several places, and an alias can itself be the scanned quantity
 (`var : alias-X : scan : value`, or the `scan : X-value` shorthand on any `var`
 block, e.g. `var : mol-pol : scan : N-value`).
@@ -125,12 +127,15 @@ alias : N : value : 100
 mol : poly : composition : (A)#N#      // becomes (A)100
 ```
 
-**Entering numbers** — a field is read as numeric only if it starts with a
-digit (or `-` then a digit); scientific notation (`1e-6`, `6.02E23`) is
-accepted, but a leading dot is not (`.34` falls back to the default). A field
-that does not start that way (e.g. a stray `e-10` typo) is treated as
-unparseable and the parameter falls back to its default — matching Namics'
-`Input::Get_Real`.
+**Entering numbers** — fields are parsed with Python's `float()`: scientific
+notation (`1e-6`, `6.02E23`) and a leading dot (`.34`) are accepted, and an
+unparseable value (a stray `e-10` typo) raises naming the value. The one
+exception is the numeric **`newton`** keys (`tolerance`, `iterationlimit`,
+`deltamax`, `m` and the `super_*` keys): there, as in Namics'
+`Input::Get_Real`, a value counts as numeric only if it starts with a digit (or
+`-` then a digit), and anything else (`.5`, `e-10`, an undefined `#TOL#`) falls
+back to the solver default. Namics does that silently; PySFBox prints one
+`warning: newton : ... is not a number ... using the default` line per value.
 
 ### Output file naming
 
@@ -474,9 +479,17 @@ interpreted at the `mon` level. Segment output properties (`phi`, `u`, moments,
 Any other value raises (case matters; `Frozen` and `pined` get a
 did-you-mean), and Namics' `tagged`/`clamp` raise `NotImplementedError`. A
 `frozen`/`pinned` segment without the matching range raises
-`freedom <f> requires a <f>_range`, and a `free` segment with a range raises
-(in the first start, as in Namics; a later start may turn a mon free while its
-old range line stays in the accumulated settings). Internal `state` blocks may not be attached
+`freedom <f> requires a <f>_range`: the range is taken from the keyword that
+matches the freedom (`pinned_range` for `pinned`, `frozen_range` for
+`frozen`), never from the other one. In the first start a `free` segment with
+a range raises, and so does a `pinned` segment that also carries a
+`frozen_range` or a `frozen` one that also carries a `pinned_range` (as in
+Namics); a later start may change a mon's freedom while its old range line
+stays in the accumulated settings, and that stale line is ignored. (Before
+28 Oct 2026 a `frozen_range` line won whenever present, so a frozen mon
+converted to pinned in a later start kept its graft on the frozen range,
+silently.)
+Internal `state` blocks may not be attached
 to a `frozen` mon (`states on frozen mons are not allowed … use a pinned mon
 instead`).
 
@@ -639,7 +652,7 @@ an unknown monomer raises `mol <name>: unknown mon '<mon>'`.
 |---|---|---|---|
 | `composition` | architecture string (see below) | — (required) | chain sequence/topology |
 | `freedom` | `free`, `restricted`, `solvent`, `neutralizer` | — (required) | how the amount is fixed (see below) |
-| `phibulk` | real ≥ 0 | — (required for `free`) | bulk volume fraction (used by `free`) |
+| `phibulk` | real in [0, 1] | — (required for `free`) | bulk volume fraction (used by `free`) |
 | `theta` | real ≥ 0 | `n * N` (`restricted` needs `theta` or `n`) | total amount ∑<sub>z</sub>L(z)φ(z) (used by `restricted`) |
 | `n` | real ≥ 0 | `0.0` | number of chains; only sets the `theta` default (`theta = n·N`) |
 | `ring` | `true`/`false` | `false` | ring topology — **raises** `NotImplementedError` if true |
@@ -782,7 +795,7 @@ state : H3O : alphabulk : 1e-7
 |---|---|---|---|
 | `mon` | an existing `mon` name | — (required) | the segment type this state belongs to |
 | `valence` | real | `0.0` | state charge in units of `e` (this is what carries the charge) |
-| `alphabulk` | real | unset | anchors the bulk fraction of this state; unset states are solved from the reactions |
+| `alphabulk` | real, 0 < alphabulk < 1 | unset | anchors the bulk fraction of this state; unset states are solved from the reactions. The anchors of one mon must sum to less than 1 (its unanchored states get the rest); a value outside (0, 1) or an anchor sum ≥ 1 raises naming the state, mon and value (Namics refuses values outside 0 ... 1) |
 | `chi_Y` / `chi-Y` | real | inherit mon's | per-state χ override with partner `Y` (a stateless mon or another state) |
 
 States accept **only** those parameters. Anything else — notably `epsilon` or
@@ -1419,7 +1432,18 @@ var : mol-poly : end_value : 100
 
 - **Linear** produces `round((end − start)/step) + 1` values (both ends
   included). If `step` has the wrong sign for the direction, the count collapses
-  to a single step at the start value.
+  to a single step at the start value. A value within 1e-9·step of `end_value`
+  is set to `end_value` exactly (0.15 by −0.05 ends at 0, not −2.8e-17).
+- **Amount domains** _(since 28 Oct 2026)_: before the first row, every
+  planned value of a scanned free `phibulk` (domain [0, 1]), restricted
+  `theta`/`n` (≥ 0) or state `alphabulk` ((0, 1)) is checked, and a value
+  outside its domain raises naming the step and the value. When `step` does not
+  divide `end_value − start`, the rounded count above can add a row past
+  `end_value` (0.01 by −0.0035 to 0 plans 0.01, 0.0065, 0.003, −0.0005); out
+  of the domain that row is refused with a dividing step suggested, where it
+  used to be written as a converged row of no physical state. The same values
+  raise at build time in a plain input (`mol pol: phibulk -0.01 is out of
+  range 0 .. 1`), as in Namics.
 - **Exponential** (`scale : exponential`) interpolates in `log10`; `steps` is the
   number of steps **per decade**, so it takes as many steps from 10→100 as from
   100→1000. Both start and `end_value` must be positive (else it raises). This is
@@ -1529,7 +1553,8 @@ non-monotone/unreachable target, raises with actionable advice.
 
 Ranges pin a `mon`'s segments to lattice sites; a segment with
 `freedom : frozen` or `freedom : pinned` **requires** a range (else it raises).
-Give it with `mon : X : frozen_range : ...` or `mon : X : pinned_range : ...`
+Give it with the keyword that matches the freedom: `mon : X : frozen_range :
+...` for a frozen mon, `mon : X : pinned_range : ...` for a pinned one
 (cross-ref `mon`).
 
 **1-gradient** tokens (`model.py:_set_range`; coordinates are 1-based *physical*
@@ -1573,9 +1598,17 @@ alias : N : value : 100
 ```
 
 defines the substitution `#N#`. `substitute_aliases` replaces every `#N#`
-occurrence in **composition strings** (`mol : X : composition`) and in the
-lattice **`n_layers`** fields (`n_layers`, `n_layers_x/y/z`) before parsing, so
-one alias can size the box and the chain at once:
+occurrence before the field is parsed, in exactly these fields:
+
+- **substituted:** composition strings (`mol : X : composition`); the lattice
+  layer counts `n_layers`, `n_layers_x/y/z`; every `sys` value; every `newton`
+  value (`sys`/`newton` since 28 Oct 2026);
+- **not substituted:** the other `lat` keys (`offset_first_layer`, `lambda`,
+  bounds, …), the other `mon` and `mol` values, `state`, `reaction`, `var` and
+  the output blocks. A `#X#` in a numeric field there raises as an unparseable
+  number.
+
+One alias can size the box and the chain at once:
 
 ```
 alias : N : value : 100

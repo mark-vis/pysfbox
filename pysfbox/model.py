@@ -68,11 +68,24 @@ class Segment:
         self.on_upper_surface = False
         self.surface_face = None            # (axis, 'lo'|'hi') for ND walls
         self.in_ghost = False               # wall lives in a ghost layer
-        rng = last(params, "frozen_range") or last(params, "pinned_range")
         if self.freedom in ("frozen", "pinned"):
+            # the range keyword must MATCH the freedom (Namics
+            # segment.cpp:306-312/388-395). It used to be picked by presence,
+            # frozen_range first, so a leftover frozen_range line (or a
+            # frozen start converted to pinned -- settings accumulate) put
+            # the graft on the frozen range, silently (review 27 Oct 2026,
+            # #25). A stale other-freedom line from an earlier start is
+            # ignored here; the first start refuses it (_check_first_start)
+            key = f"{self.freedom}_range"
+            rng = last(params, key)
             if rng is None:
-                raise ValueError(f"mon {name}: freedom {self.freedom} "
-                                 f"requires a {self.freedom}_range")
+                other = ("pinned_range" if self.freedom == "frozen"
+                         else "frozen_range")
+                raise ValueError(
+                    f"mon {name}: freedom {self.freedom} requires a {key}"
+                    + (f" (found {other}; the range keyword must match the "
+                       "freedom)" if last(params, other) is not None
+                       else ""))
             self._set_range(rng)
         if self.in_ghost and (self.valence != 0.0 or self.fixed_psi0):
             # the Poisson rows are interior-only: a charge (or an electrode)
@@ -674,6 +687,26 @@ class Molecule:
         self.phibulk = float(last(params, "phibulk", 0.0))
         self.n = float(last(params, "n", 0.0))
         self.theta = float(last(params, "theta", self.n * self.N))
+        # amounts outside their domain have no physical state: a negative
+        # free phibulk ran the empty molecule while the bulk closure, the
+        # excess and Omega used the negative number (theta_exc = L|phibulk|),
+        # a negative theta/n ran theta = 0 under the declared label (review
+        # 27 Oct 2026, #32; Namics molecule.cpp:421/506 refuses both).
+        # Written as 'not (..)' so NaN is refused too; the solvent's and
+        # the neutralizer's phibulk are set by the bulk closure, not declared
+        if self.freedom == "free" and not (0.0 <= self.phibulk <= 1.0):
+            raise ValueError(
+                f"mol {name}: phibulk {self.phibulk:g} is out of range "
+                "0 .. 1 (a bulk volume fraction; 'phibulk : 0' switches "
+                "the molecule off)")
+        if self.freedom == "restricted":
+            for key in ("theta", "n"):
+                if last(params, key) is not None \
+                        and not (getattr(self, key) >= 0.0):
+                    raise ValueError(
+                        f"mol {name}: {key} {getattr(self, key):g} is out "
+                        f"of range (an amount, >= 0; '{key} : 0' switches "
+                        "the molecule off)")
         self.phi_per_seg = {}   # segment name -> profile
         self.phi = np.zeros(lat.M)
         self.GN = 0.0

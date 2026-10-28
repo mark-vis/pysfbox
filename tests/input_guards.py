@@ -14,7 +14,11 @@ neutralizer bulk, [30] bound values + wrong-dimension keys, [31] lambda at
 fjc>1/N-D, [36] 1-D range bounds, [46] micro/bate blocks, [59] mol
 freedom/amount, [61] unused state chi, [71] UTF-8 BOM, [84] mu : 0,
 [45] var scan validation, [53] one target per var block; [X] the
-characteristic-function parse errors and compute_kJ0 (9 Oct 2026).
+characteristic-function parse errors and compute_kJ0 (9 Oct 2026); from
+the 27 Oct 2026 review: [F32] amounts outside their domain + the scan end
+snap, [F44] alphabulk anchors, [F25] the range keyword follows the freedom,
+[F56] missing n_layers/composition, [F57] numbers and alias scope
+(newton/sys substitution, the unparseable-newton-value warning).
 """
 import contextlib
 import io
@@ -26,7 +30,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-from pysfbox.inputreader import read_input  # noqa: E402
+import numpy as np  # noqa: E402
+
+from pysfbox.inputreader import read_input, substitute_aliases  # noqa: E402
 from pysfbox.latticend import LatticeND  # noqa: E402
 from pysfbox import runner  # noqa: E402
 from pysfbox.system import System  # noqa: E402
@@ -384,6 +390,281 @@ builds("X : F - water - pol (spaces are free, as in Namics)",
 raises("compute_kJ0 is refused with the pointer",
        WALL + "sys : NN : compute_kJ0 : true\n", NotImplementedError,
        ["compute_kJ0", "bare first and second moments", "curved ladders"])
+
+# ---- review 27 Oct 2026: input and amount guards ------------------------
+
+
+def run(text, name="r.in"):
+    """run_file on `text`; returns (kal rows as floats, stdout). Raises
+    what run_file raises."""
+    p = write(text, name)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        runner.run_file(p, verbose=False)
+    rows = [[float(v) for v in ln.split()] for ln in
+            open(p[:-3] + ".kal").read().strip().split("\n")[1:]]
+    return rows, out.getvalue()
+
+
+def run_raises(label, text, exc, words, name="r.in"):
+    """run_file must raise BEFORE any .kal data row is written."""
+    p = write(text, name)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            runner.run_file(p, verbose=False)
+    except exc as e:
+        kal = p[:-3] + ".kal"
+        rows = (open(kal).read().strip().split("\n")[1:]
+                if os.path.exists(kal) else [])
+        check(label, all(w in str(e) for w in words) and not rows,
+              f"{e} / {len(rows)} kal row(s)")
+        return
+    except Exception as e:                          # noqa: BLE001
+        check(label, False, f"{type(e).__name__}: {e}")
+        return
+    check(label, False, "ran without complaint")
+
+
+# a 30-layer planar box, frozen adsorbing wall S, (A)20 in monomeric W
+AMT = """
+lat : flat : n_layers : 30
+lat : flat : geometry : planar
+mon : S : freedom : frozen
+mon : S : frozen_range : 1;1
+mon : A : freedom : free
+mon : W : freedom : free
+mon : A : chi_S : -1
+mon : A : chi_W : 0.5
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+mol : pol : composition : (A)20
+newton : NN : tolerance : 1e-10
+output : kal : append : false
+kal : mol : pol : phibulk
+kal : mol : pol : theta
+kal : mol : pol : theta_exc
+kal : mol : W : phibulk
+kal : sys : NN : grand_potential
+"""
+FREE = "mol : pol : freedom : free\nmol : pol : phibulk : {}\n"
+RESTR = "mol : pol : freedom : restricted\nmol : pol : {} : {}\n"
+SCAN = ("var : mol-pol : scan : phibulk\nvar : mol-pol : step : {}\n"
+        "var : mol-pol : end_value : 0\nstart\n")
+
+print("[F32] amounts outside their domain")
+for v in ("-5e-4", "1.5", "nan"):
+    raises(f"free phibulk {v} refused at build", AMT + FREE.format(v),
+           ValueError, ["mol pol", "phibulk", "out of range 0 .. 1"])
+for k, v in (("theta", "-1"), ("n", "-0.05"), ("theta", "nan")):
+    raises(f"restricted {k} {v} refused at build", AMT + RESTR.format(k, v),
+           ValueError, ["mol pol", k, "out of range"])
+run_raises("descending scan 0.01 by -0.0035 to 0: refused before row 0, "
+           "naming the overshoot row", AMT + FREE.format("0.01")
+           + SCAN.format("-0.0035"), ValueError,
+           ["step 3", "value 4 of 4", "phibulk to -0.0005", "[0, 1]",
+            "end_value 0.003"])
+rows, _ = run(AMT + FREE.format("0.15") + SCAN.format("-0.05"))
+check("scan 0.15 by -0.05 to 0 runs 4 rows, the last at exactly 0.0 "
+      "(end snap), absent molecule (theta_exc 0, W phibulk 1, |Omega| "
+      "< 1e-9)", len(rows) == 4 and rows[-1][0] == 0.0
+      and rows[-1][2] == 0.0 and rows[-1][3] == 1.0
+      and abs(rows[-1][4]) < 1e-9, str(rows[-1:]))
+for start, step in ((0.3, -0.1), (0.7, -0.1), (0.15, -0.05)):
+    st = read_input(write(AMT + FREE.format(start)
+                          + SCAN.format(step)))[0]
+    vals = runner._var_plan(st)[3]
+    check(f"_var_plan {start} by {step} ends at exactly 0.0 (was "
+          "round-off below zero)", vals[-1] == 0.0, repr(vals[-1]))
+st = read_input(write(AMT + FREE.format("0.1") + "var : mol-pol : scan : "
+                      "phibulk\nvar : mol-pol : step : 0.1\nvar : mol-pol :"
+                      " end_value : 0.3\nstart\n"))[0]
+check("_var_plan 0.1 by 0.1 ends at exactly 0.3",
+      runner._var_plan(st)[3][-1] == 0.3, repr(runner._var_plan(st)[3]))
+run_raises("restricted theta scan 2 by -0.3 to 0 (last row -0.1): refused",
+           AMT + RESTR.format("theta", "2") + "var : mol-pol : scan : theta"
+           "\nvar : mol-pol : step : -0.3\nvar : mol-pol : end_value : 0\n"
+           "start\n", ValueError, ["theta to -0.1", ">= 0"])
+rows, _ = run(AMT + FREE.format("0") + "start\n")
+check("phibulk 0 still runs: theta_exc 0, W phibulk 1, |Omega| < 1e-9",
+      rows[0][2] == 0.0 and rows[0][3] == 1.0 and abs(rows[0][4]) < 1e-9,
+      str(rows))
+rows, _ = run(AMT + RESTR.format("theta", "0") + "start\n")
+check("restricted theta 0 still runs (theta 0, |Omega| < 1e-9)",
+      rows[0][1] == 0.0 and abs(rows[0][4]) < 1e-9, str(rows))
+
+# 3-state water + a weak-acid 10-mer at a wall
+WEAKA = """
+lat : flat : n_layers : 20
+lat : flat : geometry : planar
+mon : S : freedom : frozen
+mon : S : frozen_range : 1;1
+mon : W : freedom : free
+mon : A : freedom : free
+mon : Na : freedom : free
+mon : Na : valence : 1
+state : H3O : mon : W
+state : H3O : valence : 1
+state : H3O : alphabulk : {h}
+state : H2O : mon : W
+state : H2O : valence : 0
+state : OH : mon : W
+state : OH : valence : -1
+state : AH : mon : A
+state : AH : valence : 0
+state : AM : mon : A
+state : AM : valence : -1
+reaction : w : equation : 2(H2O)=1(H3O)+1(OH)
+reaction : w : pK : 17.5
+reaction : a : equation : 1(AH)+1(H2O)=1(AM)+1(H3O)
+reaction : a : pK : 6
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+mol : pol : composition : (A)10
+mol : pol : freedom : restricted
+mol : pol : theta : 1
+mol : na : composition : (Na)1
+mol : na : freedom : neutralizer
+output : kal : append : false
+kal : mon : W : alphabulk_H3O
+kal : mon : A : alphabulk_AM
+"""
+print("[F44] alphabulk anchors outside (0, 1)")
+for h in ("0", "-1e-6", "1.5", "1e6", "nan", "1"):
+    raises(f"H3O alphabulk {h}: named refusal, no math error",
+           WEAKA.format(h=h), ValueError, ["state H3O", "mon W",
+                                           "alphabulk", "(0, 1)"])
+raises("anchors H3O 0.6 + OH 0.6 (no autoprotolysis): the sum is refused",
+       WEAKA.format(h="0.6").replace(
+           "reaction : w : equation : 2(H2O)=1(H3O)+1(OH)\n"
+           "reaction : w : pK : 17.5\n", "")
+       + "state : OH : alphabulk : 0.6\n", ValueError,
+       ["mon W", "H3O 0.6", "OH 0.6", "sum to 1.2"])
+s44 = build(WEAKA.format(h="1e-6"))
+al = {st.name: st.alphabulk for seg in s44.segments.values()
+      for st in seg.states}
+check("control H3O 1e-6: AM/AH = alpha_H2O (Ka 1e-6 at alpha_H3O 1e-6) "
+      "to 1e-12", abs(al["AM"] / al["AH"] / al["H2O"] - 1) < 1e-12,
+      str(al))
+run_raises("exponential alphabulk scan 1e-3 -> 10: refused before row 0",
+           WEAKA.format(h="1e-3") + "var : state-H3O : scan : alphabulk\n"
+           "var : state-H3O : scale : exponential\nvar : state-H3O : "
+           "steps : 1\nvar : state-H3O : end_value : 10\nstart\n",
+           ValueError, ["state : H3O : alphabulk", "(0, 1)", "step 3"])
+
+# a restricted brush (X)1(A)20 grafted by X
+BRUSH = """
+lat : flat : n_layers : 30
+lat : flat : geometry : planar
+lat : flat : lowerbound : surface
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : A : freedom : free
+mon : W : freedom : free
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+mol : pol : composition : (X)1(A)20
+mol : pol : freedom : restricted
+mol : pol : n : 0.05
+output : kal : append : false
+kal : mon : X : 1st_M_phi_z
+kal : mol : pol : theta
+"""
+print("[F25] the range keyword follows the freedom")
+run_raises("pinned + pinned_range 10;10 + a leftover frozen_range 1;1 "
+           "(first start): refused", BRUSH + "mon : X : freedom : pinned\n"
+           "mon : X : pinned_range : 10;10\nmon : X : frozen_range : 1;1\n"
+           "start\n", ValueError, ["mon X", "frozen_range", "pinned"])
+raises("pinned with only a frozen_range: requires a pinned_range",
+       BRUSH + "mon : X : freedom : pinned\nmon : X : frozen_range : 10;10"
+       "\n", ValueError, ["requires a pinned_range", "found frozen_range"])
+raises("frozen with only a pinned_range: requires a frozen_range",
+       BRUSH.replace("(X)1(A)20", "(A)20") + "mon : X : freedom : frozen\n"
+       "mon : X : pinned_range : 1;1\n", ValueError,
+       ["requires a frozen_range", "found pinned_range"])
+two = (BRUSH.replace("(X)1(A)20", "(A)20") + "mon : X : freedom : frozen\n"
+       "mon : X : frozen_range : 1;1\nstart\nmol : pol : composition : "
+       "(X)1(A)20\nmon : X : freedom : pinned\nmon : X : pinned_range : "
+       "10;10\nstart\n")
+rows, _ = run(two)
+check("frozen X at 1;1, then pinned X at 10;10: start 2 grafts at layer "
+      "10 (1st_M_phi_z 9.5, was 0.5)", abs(rows[1][0] - 9.5) < 1e-12,
+      str(rows))
+s25 = build(two)
+check("... and its X range_mask is [10] (layer 10, one ghost below)",
+      np.nonzero(s25.segments["X"].range_mask)[0].tolist() == [10],
+      str(np.nonzero(s25.segments["X"].range_mask)[0].tolist()))
+back = (BRUSH + "mon : X : freedom : pinned\nmon : X : pinned_range : "
+        "10;10\nstart\nmol : pol : composition : (A)20\nmon : X : "
+        "freedom : frozen\nmon : X : frozen_range : 1;1\nstart\n")
+s25b = build(back)
+check("pinned at 10;10, then frozen at 1;1: the frozen site is layer 1",
+      np.nonzero(s25b.segments["X"].range_mask)[0].tolist() == [1],
+      str(np.nonzero(s25b.segments["X"].range_mask)[0].tolist()))
+
+print("[F56] missing n_layers / composition")
+check("substitute_aliases(None, {}) is None",
+      substitute_aliases(None, {}) is None)
+raises("1-D lat without n_layers", sub(WALL, "lat : flat : n_layers : 20\n",
+                                       ""), ValueError,
+       ["lat : n_layers is required"])
+raises("1-D lat without n_layers, an alias present",
+       sub(WALL, "lat : flat : n_layers : 20\n", "alias : R : value : 3\n"),
+       ValueError, ["lat : n_layers is required"])
+raises("mol without composition", sub(WALL, "mol : pol : composition : "
+                                      "(A)25\n", ""), ValueError,
+       ["mol pol", "composition is required"])
+raises("gradients 2 without n_layers_y (N-D guard held)",
+       sub(NDW, "lat : flat : n_layers_y : 3\n", ""), ValueError,
+       ["n_layers_y"])
+
+print("[F57] numbers and alias scope")
+
+
+def newton_opts(lines):
+    out = io.StringIO()
+    st = read_input(write(WALL + lines))[-1]
+    with contextlib.redirect_stdout(out):
+        nopt = runner._newton_options(st)
+        sopt = runner._super_options(st)
+    return nopt, sopt, out.getvalue()
+
+
+runner._NEWTON_NOTES.clear()
+o, _, txt = newton_opts("newton : n : tolerance : .5\n")
+check("newton tolerance '.5' falls back to the default, with a warning",
+      "tolerance" not in o and "tolerance : .5 is not a number" in txt,
+      f"{o} / {txt!r}")
+o, _, txt = newton_opts("newton : n : tolerance : e-10\n")
+check("newton tolerance 'e-10' falls back, with a warning",
+      "tolerance" not in o and "is not a number" in txt, f"{o} / {txt!r}")
+o, so, txt = newton_opts("alias : R : value : 1e-9\nalias : S : value : "
+                         "1e-8\nnewton : n : tolerance : #R#\nnewton : n : "
+                         "super_tolerance : #S#\n")
+check("#R# in newton tolerance / super_tolerance is substituted",
+      o.get("tolerance") == 1e-9 and so["tolerance"] == 1e-8
+      and "warning" not in txt, f"{o} / {so} / {txt!r}")
+o, _, txt = newton_opts("newton : n : tolerance : #TOL#\n")
+check("undefined #TOL# in newton: default + a warning naming it",
+      "tolerance" not in o and "no alias defines #TOL#" in txt,
+      f"{o} / {txt!r}")
+o, _, txt = newton_opts("newton : n : tolerance : 1e-9\n")
+check("a plain number stays silent", o.get("tolerance") == 1e-9
+      and txt == "", txt)
+check("mol phibulk '.02' reads 0.02 (Python float, not the Namics rule)",
+      build(sub(WALL, "phibulk : 0.02", "phibulk : .02"))
+      .molecules["pol"].phibulk == 0.02)
+raises("mon chi 'e-1' raises", sub(WALL, "chi_A : 0.4", "chi_A : e-1"),
+       ValueError, ["e-1"])
+s57 = build("alias : G : value : polymer_adsorption\n" + WALL
+            + "sys : NN : initial_guess : #G#\n")
+check("#G# in a sys value is substituted (initial_guess builds a seed)",
+      s57.initial_guess() is not None)
+raises("#R# in a mon chi is not substituted: raises as unparseable",
+       "alias : R : value : 0.3\n" + sub(WALL, "chi_A : 0.4", "chi_A : #R#"),
+       ValueError, ["#R#"])
+raises("#R# in lat offset_first_layer still raises",
+       "alias : R : value : 2\n" + WALL + "lat : flat : offset_first_layer :"
+       " #R#\n", ValueError, ["#R#"])
 
 print(f"all done ({failures} failure(s))")
 
