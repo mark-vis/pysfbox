@@ -495,6 +495,17 @@ def _target_error(system, target):
                 raise NotImplementedError(
                     "the Laplace_pressure search target is 1-gradient only")
             lp, _w_last = system.laplace_pressure()
+            if not np.isfinite(lp):
+                # a frozen core without a bulk plateau past it: the frozen
+                # layer's omega = 0 used to stand in, so the search
+                # accepted its first probe (28 Oct 2026)
+                raise ValueError(
+                    "Laplace_pressure undefined: an end layer is frozen (a "
+                    "core or wall block) and this probe has no bulk plateau "
+                    "past it (a thin shell or film around the core), so "
+                    "there is no inner pressure to balance -- grow the "
+                    "droplet (larger theta) until its interior is a bulk "
+                    "plateau, or search on another target")
             return -(lp - val), lp
         raise NotImplementedError(
             f"var target 'sys : {prop}' is not supported")
