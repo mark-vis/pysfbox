@@ -8,6 +8,12 @@
 // (model._compute_phi_tree) reduces here to walking
 // each arm; a 2-arm '@dend(X,(A)N,2)' star reproduces the linear palindrome
 // (A)N(X)(A)N bit-for-bit (~1e-16), the internal equivalence check.
+// The mu and free_energy columns (added 28 Oct 2026) check ln GN through an
+// order-one number: the restricted dendrimer's profile does not move with a
+// constant shift of ln GN, and GN itself (1e-35) sits below the
+// comparator's absolute floor. Oracle at creation (Namics 3e9eafd):
+// mu -310.295653457 (1e-12 rel), F -3.44770988656 (1.3e-10), GN 3.6e-10;
+// Legendre F = Omega + sum n mu closes to 1.5e-11.
 lat : flat : geometry : planar
 lat : flat : n_layers : 100
 lat : flat : gradients : 1
@@ -30,9 +36,11 @@ mol : pol : n : 0.01
 output : kal : append : false
 kal : mol : pol : theta
 kal : mol : pol : GN
+kal : mol : pol : mu
 kal : mon : A : theta
 kal : mon : B : theta
 kal : mon : D : theta
+kal : sys : NN : free_energy
 output : pro : append : false
 pro : mol : pol : phi
 pro : mon : A : phi

@@ -5,9 +5,19 @@ import os
 import numpy as np
 
 from .inputreader import (_copy, _suggest, get_blocks, last, read_input,
-                          set_value)
+                          set_value, substitute_aliases)
 from .output import kal_path, pro_path, write_kal, write_pro
-from .system import InputAuditError, System
+from .system import InputAuditError, System, _layer_count
+
+
+def _reset_file_notes():
+    """Forget the once-per-FILE notes before the next input file. The note
+    set deduplicates per scan step, but a process can run several files
+    (`pysfbox a.in b.in`, notebook loops): a note that qualifies a printed
+    number (two-sided Laplace_pressure, kJ0, an undeclared X) must reach
+    every file whose numbers it qualifies."""
+    from . import system
+    system._WARN_NOTES.clear()
 
 
 def _num(s):
@@ -25,6 +35,33 @@ def _num(s):
         return float(t)
     except ValueError:
         return None
+
+
+_NEWTON_NOTES = set()       # once-per-process unparseable newton values
+
+
+def _newton_num(settings, block, params, key):
+    """A numeric newton/super value: `#X#` aliases substituted (review 27
+    Oct 2026, #57: newton values were a numeric block the aliases did not
+    reach), then parsed like Namics' Get_Real (`_num`). An unparseable
+    value still falls back to the solver default as in Namics, but LOUDLY
+    (once per process) -- `tolerance : .5` or an undefined `#TOL#` used to
+    run at the default 1e-7 without a word."""
+    raw = last(params, key)
+    if raw is None:
+        return None
+    text = substitute_aliases(raw, settings)
+    v = _num(text)
+    if v is None:
+        note = (f"newton : {block} : {key} : {raw} is not a number (Namics "
+                "would silently use the default) -- using the default"
+                + (f"; no alias defines {text.strip()}"
+                   if "#" in str(text) else
+                   "; write a leading digit (0.5, 1e-10)"))
+        if note not in _NEWTON_NOTES:
+            _NEWTON_NOTES.add(note)
+            print(f"  warning: {note}")
+    return v
 
 
 def _output_specs(settings, kind):
@@ -62,19 +99,19 @@ def _pro_write_bounds(settings):
 def _newton_options(settings):
     opts = {}
     for name, params in get_blocks(settings, "newton"):
-        tol = _num(last(params, "tolerance"))
+        tol = _newton_num(settings, name, params, "tolerance")
         if tol is not None:
             opts["tolerance"] = tol
-        ilim = _num(last(params, "iterationlimit"))
+        ilim = _newton_num(settings, name, params, "iterationlimit")
         if ilim is not None:
             opts["iterationlimit"] = int(ilim)
-        dmax = _num(last(params, "deltamax"))
+        dmax = _newton_num(settings, name, params, "deltamax")
         if dmax is not None:
             opts["deltamax"] = dmax
-        m = _num(last(params, "m"))
+        m = _newton_num(settings, name, params, "m")
         if m is not None:
             opts["m_anderson"] = int(m)
-        method = last(params, "method")
+        method = substitute_aliases(last(params, "method"), settings)
         if method:
             if method == "pseudohessian":
                 # the Namics default: pseudohessian quasi-Newton as primary
@@ -89,7 +126,7 @@ def _newton_options(settings):
             else:
                 print(f"  note: newton method '{method}' unknown; using the "
                       "default solver cascade")
-        eng = last(params, "engine")
+        eng = substitute_aliases(last(params, "engine"), settings)
         if eng and eng.strip().lower() not in ("numpy", "np"):
             print(f"  note: newton engine '{eng}' unknown; "
                   "using the NumPy residual")
@@ -171,20 +208,20 @@ def _super_options(settings):
     super_iterationlimit = max(iterationlimit/10, 30)."""
     tol, ilim = 1e-7, 1000
     stol = sdmax = silim = None
-    for _, params in get_blocks(settings, "newton"):
-        v = _num(last(params, "tolerance"))
+    for name, params in get_blocks(settings, "newton"):
+        v = _newton_num(settings, name, params, "tolerance")
         if v is not None:
             tol = v
-        v = _num(last(params, "iterationlimit"))
+        v = _newton_num(settings, name, params, "iterationlimit")
         if v is not None:
             ilim = int(v)
-        v = _num(last(params, "super_tolerance"))
+        v = _newton_num(settings, name, params, "super_tolerance")
         if v is not None:
             stol = v
-        v = _num(last(params, "super_deltamax"))
+        v = _newton_num(settings, name, params, "super_deltamax")
         if v is not None:
             sdmax = v
-        v = _num(last(params, "super_iterationlimit"))
+        v = _newton_num(settings, name, params, "super_iterationlimit")
         if v is not None:
             silim = int(v)
     return {"tolerance": stol if stol is not None else 10.0 * tol,
@@ -198,9 +235,24 @@ def _check_first_start(settings):
     a later start may legitimately turn a frozen/pinned mon free while its
     old range line stays in the settings): a mon declared free together
     with a range is a contradiction -- the range was silently dropped
-    (review 6 Oct 2026, #25; Namics segment.cpp:1077-1083)."""
+    (review 6 Oct 2026, #25; Namics segment.cpp:1077-1083), and so is a
+    pinned mon carrying a frozen_range or a frozen one carrying a
+    pinned_range (review 27 Oct 2026, #25; Namics segment.cpp:306/388) --
+    in later starts the other freedom's line is a stale accumulated one,
+    which Segment ignores."""
     for name, params in get_blocks(settings, "mon"):
-        if str(last(params, "freedom", "free")).strip() != "free":
+        freedom = str(last(params, "freedom", "free")).strip()
+        if freedom in ("pinned", "frozen"):
+            other = "frozen" if freedom == "pinned" else "pinned"
+            # (only the other keyword: Segment raises 'requires a ..._range')
+            if f"{other}_range" in params and f"{freedom}_range" in params:
+                raise ValueError(
+                    f"mon {name}: freedom : {freedom} cannot be combined "
+                    f"with '{other}_range' (as in Namics: a {freedom} "
+                    f"segment takes its {freedom}_range only) -- drop the "
+                    f"{other}_range line")
+            continue
+        if freedom != "free":
             continue
         rng = [k for k in ("frozen_range", "pinned_range") if k in params]
         if rng:
@@ -320,7 +372,66 @@ def _resolve_scan_param(settings, key, name, prop):
             f"var : {key}-{name} : scan : {prop}: '{prop}' is not a "
             f"parameter PySFBox reads under '{key}'"
             f"{_suggest(prop, known)} -- the scan would change nothing")
+    if key == "lat" and prop.startswith("n_layers"):
+        # only the layer counts of the block's own dimensionality are read:
+        # a scan of the other spelling wrote identical rows under changing
+        # labels (review 27 Oct 2026, #7; Namics refuses an n_layers var
+        # target on gradients > 1 too, lattice.cpp:608-622)
+        lp = settings.get(("lat", name), {})
+        counts = _layer_keys(lp)
+        if prop not in counts:
+            g = int(float(last(lp, "gradients", 1)))
+            raise ValueError(
+                f"var : {key}-{name} : scan : {prop}: the box size of a "
+                f"gradients : {g} lattice is {' / '.join(counts)} -- "
+                f"{prop} is not read there")
     return prop
+
+
+def _layer_keys(lp):
+    """The layer-count keys a lat block's gradient count reads."""
+    g = int(float(last(lp, "gradients", 1)))
+    return (["n_layers"] if g == 1 else ["n_layers_x", "n_layers_y"]
+            + (["n_layers_z"] if g == 3 else []))
+
+
+def _check_layer_grid(settings, plan):
+    """Pre-flight of a scan that drives a box size through an ALIAS
+    (`n_layers : #H#`, `n_layers_x : #H#`, ...) or an exponential
+    schedule: substitute every planned value and read the resulting layer
+    count the way the System will, so a non-whole rung raises BEFORE step
+    0 -- not at that rung, after rows were written (review 27 Oct 2026,
+    #42). Every lat block is checked with the layer keys its gradient
+    count reads."""
+    key, name, prop, values = plan
+    if key == "lat" and prop.startswith("n_layers"):
+        if all(float(v).is_integer() for v in values):
+            return                        # whole layers: the System checks
+        checks = [(i, v, name, prop, str(v)) for i, v in enumerate(values)]
+    elif key == "alias":
+        checks = []
+        for i, v in enumerate(values):
+            # the scan writes the alias value exactly like this (set_value)
+            trial = dict(settings)
+            trial[("alias", name)] = dict(settings[("alias", name)])
+            trial[("alias", name)]["value"] = [str(v)]
+            for bn, lp in get_blocks(settings, "lat"):
+                for k in _layer_keys(lp):
+                    text = last(lp, k)
+                    if text is None or "#" not in text:
+                        continue
+                    checks.append((i, v, bn, k,
+                                   substitute_aliases(text, trial)))
+    else:
+        return
+    for i, v, bn, k, text in checks:
+        try:
+            _layer_count(text, k)
+        except ValueError as e:
+            raise ValueError(
+                f"var : {key}-{name} : scan : {prop}: step {i} "
+                f"({key} {name} = {v}) sets lat : {bn} : {k} to "
+                f"{text}: {e}") from None
 
 
 def _var_plan(settings):
@@ -410,7 +521,71 @@ def _var_plan(settings):
                 "release steps whole layers)")
         n_steps = int(round((end - cur) / step)) + 1
         values = [cur + i * step for i in range(max(n_steps, 1))]
+        # snap the round-off of the schedule END onto end_value: 0.15 by
+        # -0.05 lands on -2.8e-17, which the amount-domain pre-flight
+        # (_check_scan_domain) must not refuse (review 27 Oct 2026, #32)
+        values = [end if abs(v - end) <= 1e-9 * abs(step) else v
+                  for v in values]
     return key, name, prop, values
+
+
+# the domains of the scannable amounts (Namics molecule.cpp:421/506 and
+# state.cpp:84 refuse values outside them): (text, test)
+_SCAN_DOMAINS = {
+    ("mol", "phibulk"): ("[0, 1]", lambda v: 0.0 <= v <= 1.0),
+    ("mol", "theta"): (">= 0", lambda v: v >= 0.0),
+    ("mol", "n"): (">= 0", lambda v: v >= 0.0),
+    ("state", "alphabulk"): ("(0, 1)", lambda v: 0.0 < v < 1.0),
+}
+
+
+def _check_scan_domain(settings, plan):
+    """Pre-flight of a scan over an AMOUNT (mol phibulk/theta/n, state
+    alphabulk): every planned value must lie in the quantity's domain, else
+    the scan raises BEFORE step 0, naming the step and the value (review
+    27 Oct 2026, #32/#44). A descending linear ladder whose step does not
+    divide the range used to overshoot end_value 0 by one row and write a
+    converged-looking row of no physical state (a negative free phibulk).
+    Molecule / the bulk-ionisation solve refuse the same values at build
+    time; this check only moves the refusal ahead of the rows already
+    written. (Aliases do not reach these fields in this release, so an
+    alias scan cannot move them.)"""
+    key, name, prop, values = plan
+    if (key, prop) not in _SCAN_DOMAINS:
+        return
+    dom, ok = _SCAN_DOMAINS[(key, prop)]
+    if key == "mol":
+        # exactly the values Molecule refuses: a free molecule's phibulk,
+        # a restricted one's theta/n (the solvent's and the neutralizer's
+        # phibulk are set by the bulk closure)
+        fr = str(last(settings.get(("mol", name), {}), "freedom",
+                      "")).strip()
+        if fr != ("free" if prop == "phibulk" else "restricted"):
+            return
+    scan_params = _var_roles(settings)[0][1]
+    linear = (str(last(scan_params, "scale", "linear")).strip().lower()
+              == "linear")
+    for i, v in enumerate(values):
+        val = float(v)
+        if ok(val):
+            continue
+        sched = ", ".join(f"{float(x):g}" for x in values[:8]) + (
+            ", ..." if len(values) > 8 else "")
+        hint = ""
+        if linear and i == len(values) - 1 and i > 0:
+            # the documented round(): the step does not divide the range,
+            # and the extra last row left the domain
+            start = float(values[0])
+            step = float(values[1]) - start
+            end = float(last(scan_params, "end_value"))
+            k = max(int(np.ceil(abs(end - start) / abs(step) - 1e-9)), 1)
+            hint = (f" -- the step {step:g} does not divide end_value - "
+                    f"start; use step {(end - start) / k:g} or end_value "
+                    f"{float(values[-2]):g}")
+        raise ValueError(
+            f"var : {key}-{name} : scan : {prop}: step {i} (value {i + 1} "
+            f"of {len(values)}) sets {key} : {name} : {prop} to {val:g}, "
+            f"outside its domain {dom} (schedule {sched}){hint}")
 
 
 def _set_search(settings, search, X):
@@ -495,6 +670,17 @@ def _target_error(system, target):
                 raise NotImplementedError(
                     "the Laplace_pressure search target is 1-gradient only")
             lp, _w_last = system.laplace_pressure()
+            if not np.isfinite(lp):
+                # a frozen core without a bulk plateau past it: the frozen
+                # layer's omega = 0 used to stand in, so the search
+                # accepted its first probe (28 Oct 2026)
+                raise ValueError(
+                    "Laplace_pressure undefined: an end layer is frozen (a "
+                    "core or wall block) and this probe has no bulk plateau "
+                    "past it (a thin shell or film around the core), so "
+                    "there is no inner pressure to balance -- grow the "
+                    "droplet (larger theta) until its interior is a bulk "
+                    "plateau, or search on another target")
             return -(lp - val), lp
         raise NotImplementedError(
             f"var target 'sys : {prop}' is not supported")
@@ -503,12 +689,67 @@ def _target_error(system, target):
         kind, cur = system.get_value("mol", obj, prop_lookup)
         if cur is None:
             raise ValueError(f"var target: mol '{obj}' has no '{prop}'")
+        if prop == "mu" and not np.isfinite(cur):
+            # an absent molecule (phibulk 0 or theta 0) has mu = -inf: no
+            # finite error to bracket on (review 27 Oct 2026, #66)
+            raise ValueError(
+                f"var target: mol '{obj}' has mu = {cur} at this probe (the "
+                "molecule is absent: phibulk 0 or theta 0) -- start the "
+                "search closer to the target, where the molecule is "
+                "present, or shrink newton : super_deltamax so the probes "
+                "do not reach zero amount")
         err = (cur / val - 1.0) if val != 0 else cur
         if prop == "phibulk":
             err = -err
         return err, cur
     raise NotImplementedError(
         f"var target '{item}-{obj} : {prop}' is not supported")
+
+
+def _classify_readouts(probes, c, rel=1e-9):
+    """Tell a noise-limited target from a JUMP in it, from the falsi's own
+    readouts clustered at the (collapsing) bracket point c.
+
+    probes: every (X, error) the search measured. Only the readouts with
+    |X - c| <= rel*|c| count: inside that window the target's smooth slope
+    moves the error by a negligible amount, so what remains is either the
+    inner solves' scatter (noise) or a step between two reproducible values
+    (a jump). The window is tight on purpose -- a wider one (1e-6|c|) lets a
+    steep slope pass for scatter. Group the readouts by sign:
+
+    - both signs with >= 2 readouts each, and each side reproducible
+      (max - min < 0.1 * the smaller of the two side means, in magnitude):
+      a JUMP, returns ("jump", None);
+    - both signs with >= 2 readouts but not reproducible, or one side with
+      >= 2 readouts scattering by >= 0.1 of its own mean: NOISE, returns
+      ("noise", floor) with floor = the RMS of the windowed readouts (NOT
+      the smallest one, the luckiest draw, which can sit below the floor);
+    - otherwise too few readouts to tell: ("unclear", None).
+
+    The start error plays no part: how far the search started from the
+    point says nothing about whether the error there is noise or a step (a
+    jump reached from a distant start used to be labelled noise, and the
+    advice to loosen super_tolerance accepted a state on one side of the
+    discontinuity)."""
+    near = [f for X, f in probes if abs(X - c) <= rel * abs(c)]
+    neg = [f for f in near if f < 0.0]
+    pos = [f for f in near if f > 0.0]
+
+    def spread(side):
+        return max(side) - min(side)
+
+    def mean_abs(side):
+        return abs(sum(side) / len(side))
+
+    if len(neg) >= 2 and len(pos) >= 2:
+        if max(spread(neg), spread(pos)) < 0.1 * min(mean_abs(neg),
+                                                     mean_abs(pos)):
+            return "jump", None
+        return "noise", float(np.sqrt(np.mean(np.square(near))))
+    for side in (neg, pos):
+        if len(side) >= 2 and spread(side) >= 0.1 * mean_abs(side):
+            return "noise", float(np.sqrt(np.mean(np.square(near))))
+    return "unclear", None
 
 
 def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
@@ -531,20 +772,33 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
         raise ValueError("var search: the initial search value is 0; the "
                          "search scales by it (declare a nonzero start)")
 
+    probes = []                 # every (X, f) probe: the collapse diagnosis
+
     def rf(X):
         # a failed inner SCF while marching the search variable can mean two
         # things: the probe stepped too far from the last converged state
         # (the bracket expands by a factor 1 + super_deltamax, and e.g. a
         # delta-pinned FLAT interface tolerates only tiny relative theta
         # moves), or the target really is unreachable/non-monotone -- name
-        # both, cheapest first
+        # both, cheapest first. The FIRST probe (at the start value) took
+        # no search step at all: there the cause is the change since the
+        # last converged state -- in a scan, the scan step.
         try:
-            return resid(X)
+            f = resid(X)
         except InputAuditError:
             # a refused state (the post-solve input audit) is not an SCF
             # failure: pass its message through
             raise
         except RuntimeError as e:
+            if not probes:
+                raise RuntimeError(
+                    f"{label} search: the inner SCF did not converge at the "
+                    f"start value {X:.6g} itself, before any search step "
+                    "(so super_deltamax is not the cause): in a scan, the "
+                    "scan step -- the change since the previous converged "
+                    "state -- is too large, declare a finer scan step; "
+                    "otherwise this state does not converge at the start "
+                    f"value (underlying: {e})") from e
             raise RuntimeError(
                 f"{label} search: the inner SCF did not converge at search "
                 f"value {X:.6g} (started from {x_start:.6g}); if that step "
@@ -552,6 +806,8 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
                 "(the bracket probes by a factor 1 + super_deltamax); "
                 "otherwise the target may be unreachable or non-monotone "
                 f"in the search variable (underlying: {e})") from e
+        probes.append((X, f))
+        return f
 
     grow = 1.0 + max(abs(deltamax), 1e-3)
     f0 = rf(x_start)
@@ -604,7 +860,6 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
     a, fa, b, fb = bracket
     ra, rb = fa, fb                 # the MEASURED errors at a and b (the
     #                                 Illinois weighting rescales fa only)
-    f_best = min(abs(f0), abs(fa), abs(fb))
     while it < itlimit:
         c = b - fb * (b - a) / (fb - fa)          # false-position step
         fc = rf(c)
@@ -624,28 +879,40 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
             # super_tolerance), or a JUMP in the target across the bracket
             # (a branch switch: spinodal, evaporation, a droplet changing
             # shape) -- never paper over the latter by loosening the
-            # tolerance.
+            # tolerance. Which one is told by the readouts clustered at c
+            # (_classify_readouts), never by how far the search started.
             lo, hi = (a, ra), (b, rb)
-            if f_best <= 1e-2 * abs(f0):
+            kind, floor = _classify_readouts(probes, c)
+            if kind == "noise":
                 hint = ("the error is noise-limited at ~"
-                        f"{f_best:.1e} (it shrank from {abs(f0):.1e}); if "
-                        "that offset is acceptable set 'newton : ... : "
-                        f"super_tolerance : {3.0 * f_best:.0e}'")
-            else:
-                hint = ("the target error JUMPS across this point (a "
-                        "discontinuity in the target: likely a branch "
+                        f"{floor:.1e} (the readouts at this point scatter "
+                        "by their own size between converged inner "
+                        "solves); if that offset is acceptable set "
+                        "'newton : ... : super_tolerance : "
+                        f"{3.0 * floor:.0e}'")
+            elif kind == "jump":
+                hint = ("the target error JUMPS across this point (repeated "
+                        "readouts on each side agree, with opposite signs: "
+                        "a discontinuity in the target, likely a branch "
                         "switch, e.g. a spinodal, evaporation or a shape "
                         "change of the converged state); the target value "
                         "is not reachable on a continuous branch from this "
                         "start -- change the target, or approach it with a "
                         "scan from the other side. Loosening "
                         "super_tolerance would accept a wrong state")
+            else:
+                hint = ("too few readouts at this point to tell solver "
+                        "noise from a jump in the target (a branch "
+                        "switch); rerun with a tighter inner "
+                        "'newton : ... : tolerance': noise shrinks with it, "
+                        "a jump does not. Do not loosen super_tolerance "
+                        "before that check: across a jump it would accept "
+                        "a wrong state")
             raise RuntimeError(
                 f"{label} search: the bracket collapsed at search value "
                 f"{c:.15g} with target error {fc:.3e} > super_tolerance "
                 f"{tol:.1e} (errors at the bracket ends: {lo[1]:.3e} at "
                 f"{lo[0]:.15g}, {hi[1]:.3e} at {hi[0]:.15g}); {hint}")
-        f_best = min(f_best, abs(fc))
         if fc * fb < 0.0:
             a, fa, ra = b, fb, rb
         else:
@@ -657,31 +924,56 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
         "or give a better initial value")
 
 
-def _remap_layers(x_old, n_seg, M_old, M_new):
+def _grid_shape(lat):
+    """The padded grid of a lattice as a shape tuple: `LatticeND.pdims`
+    (C-order storage, one ghost layer on both ends of every axis), or (M,)
+    for the 1-gradient `Lattice1D`. Two lattices with the same M but a
+    different shape (an N-D axis swap) do NOT share a grid."""
+    pdims = getattr(lat, "pdims", None)
+    return tuple(pdims) if pdims else (lat.M,)
+
+
+def _remap_layers(x_old, shape_old, shape_new):
     """Adapt a converged potential stack to a changed layer count, as an
     initial guess only: keep the lower-wall half from the lower end and the
     upper-wall half from the upper end (so both surface regions survive a
     two-wall compression), pad the middle with u = 0 (bulk) when growing.
     Works in refined (fjc-internal) units since M includes the ghosts.
 
+    `shape_old` / `shape_new` are the padded grids (`_grid_shape`): (M,) on
+    a 1-gradient lattice, `pdims` on LatticeND. The two-wall rule is applied
+    PER AXIS, so every kept cell stays at its lattice coordinate. Before
+    v1.4.4 an N-D block was split as one flat 1-D column, which sheared the
+    seed across the box whenever an inner axis changed (an n_layers_y scan
+    converged a droplet onto the two-half-droplet branch, 0.68 kT higher,
+    with no note). On (M,) the rule is the historical 1-D split, bit for
+    bit.
+
     The iteration vector is a stack of equal-length (M) blocks: one potential
     field per iteration species, plus a trailing psi block when the system is
     CHARGED (system.n_var adds one more M). All blocks are spatial profiles, so
     every block -- u fields AND psi -- is remapped the same way; the number of
-    blocks is inferred from the vector length (n_seg is only a hint, and would
-    miss the psi block for charged/weak systems -- the bug this guards). Returns
-    None if the length is not an integer number of M-blocks, so the caller
-    falls back to a cold start rather than crashing."""
-    if M_old <= 0 or x_old.size % M_old != 0:
+    blocks is inferred from the vector length (it would miss the psi block
+    for charged/weak systems if taken from the species count). Returns None
+    if the length is not an integer number of M-blocks, or the grids differ
+    in dimension, so the caller falls back to a cold start rather than
+    crashing."""
+    shape_old, shape_new = tuple(shape_old), tuple(shape_new)
+    M_old = int(np.prod(shape_old))
+    if (M_old <= 0 or x_old.size % M_old != 0
+            or len(shape_old) != len(shape_new)):
         return None
     n_blocks = x_old.size // M_old
-    Xo = x_old.reshape(n_blocks, M_old)
-    Xn = np.zeros((n_blocks, M_new))
-    k = min(M_old, M_new)
-    lo = k // 2
-    hi = k - lo
-    Xn[:, :lo] = Xo[:, :lo]
-    Xn[:, M_new - hi:] = Xo[:, M_old - hi:]
+    Xo = x_old.reshape((n_blocks,) + shape_old)
+    Xn = np.zeros((n_blocks,) + shape_new)
+    src, dst = [np.arange(n_blocks)], [np.arange(n_blocks)]
+    for m_old, m_new in zip(shape_old, shape_new):
+        k = min(m_old, m_new)
+        lo = k // 2
+        hi = k - lo
+        src.append(np.r_[0:lo, m_old - hi:m_old])
+        dst.append(np.r_[0:lo, m_new - hi:m_new])
+    Xn[np.ix_(*dst)] = Xo[np.ix_(*src)]
     return Xn.ravel()
 
 
@@ -715,9 +1007,84 @@ def _seed_by_species(x_old, sys_old, sys_new):
     return np.concatenate(parts)
 
 
+def _warm_seed(x_prev, sys_old, sys_new, x_before=None):
+    """The warm seed for `sys_new` from `x_prev`, the converged solution of
+    `sys_old` (the previous scan step or start). Initial-guess only: it
+    cannot change what a converged solution satisfies.
+
+      - FJC_choices changed          -> None (cold; different structure)
+      - species changed, same grid   -> `_seed_by_species` (copy by name)
+      - same species, grid changed   -> `_remap_layers` per axis (n_layers,
+                                        n_layers_x/y/z, or an N-D reshape
+                                        at the same M)
+      - same grid, layout changed    -> `_seed_by_species` (psi / beta
+                                        toggled: each block by name; the
+                                        old tail append/truncate moved the
+                                        beta block into psi when charge
+                                        toggled under a delta constraint)
+      - same grid and layout         -> x_prev, or the secant prediction
+                                        2 x_prev - x_before when the caller
+                                        passes the step before (`x_before`)
+    Returns (seed, plain, note): `plain` is True only when the seed is
+    x_prev's own layout on the same grid (a secant prediction across steps
+    is valid only then); `note` explains a COLD seed (seed None) for the
+    caller to print."""
+    if x_prev is None or sys_old is None:
+        return None, False, None
+    if sys_new.lat.fjc != sys_old.lat.fjc:
+        return None, False, ("FJC_choices changed -- starting COLD (no warm "
+                             "seed across a lattice refinement change)")
+    nv = sys_new.n_var()
+    shape_old, shape_new = _grid_shape(sys_old.lat), _grid_shape(sys_new.lat)
+    same_grid = shape_old == shape_new
+    seg_old = tuple(s.name for s in sys_old.it_species)
+    seg_new = tuple(s.name for s in sys_new.it_species)
+    plain, note = False, None
+    if seg_new != seg_old:
+        # the iteration-species list changed (a species added or removed):
+        # warm by NAME on the same grid, else say so
+        seed = (_seed_by_species(x_prev, sys_old, sys_new)
+                if same_grid else None)
+        if seed is None:
+            note = ("the iteration species AND the grid changed -- "
+                    "starting COLD; a symmetry-broken previous state may "
+                    "not survive (change one at a time to keep the warm "
+                    "start)" if not same_grid else
+                    "the iteration species changed and the previous "
+                    "solution's layout could not be matched -- starting "
+                    "COLD; check the output for a branch change")
+    elif not same_grid:
+        seed = _remap_layers(x_prev, shape_old, shape_new)
+        if seed is None or seed.size != nv:
+            # never cold-start silently (review 6 Oct 2026, #26): say so,
+            # a branch change may follow
+            seed = None
+            note = ("n_layers changed together with the unknowns' layout "
+                    "-- starting COLD; check the output for a branch "
+                    "change (change one at a time to keep the warm start)")
+    elif x_prev.size != nv:
+        # same grid and species, but a block appeared or disappeared (psi
+        # and beta can each toggle between starts). Load-bearing for the
+        # nucleation-barrier workflow: start 1 nucleates a droplet via a
+        # pinned mon, start 2 releases it and adds the constraint -- a cold
+        # restart there would find the uniform solution instead.
+        seed = _seed_by_species(x_prev, sys_old, sys_new)
+        if seed is None or seed.size != nv:
+            seed = None
+            note = ("the unknowns' layout changed in a way the previous "
+                    "solution cannot be mapped onto -- starting COLD; "
+                    "check the output for a branch change")
+    else:
+        seed, plain = x_prev, True
+        if x_before is not None and x_before.size == x_prev.size:
+            seed = 2.0 * x_prev - x_before
+    return seed, plain, note
+
+
 def run_file(path, verbose=True):
     """Run all calculations in a Namics input file; writes .kal/.pro next
     to the input file. Returns the last System (for interactive use)."""
+    _reset_file_notes()
     calculations = read_input(path)
     _check_first_start(calculations[0])
     base = os.path.splitext(path)[0]
@@ -741,7 +1108,6 @@ def run_file(path, verbose=True):
     # solution satisfies.
     x_prev = None
     x_scan_prev = None          # solution of the step before x_prev, same scan
-    seg_prev, M_prev, fjc_prev = None, 0, 0
     search_carry = {}           # search tuple -> root found in a prior start
     structure_prev = {}         # mol name -> max|phi - phibulk| of last state
     # ONE .kal column list for the whole file, from the final accumulated
@@ -760,6 +1126,10 @@ def run_file(path, verbose=True):
         newton = _newton_options(settings)
         plan = _var_plan(settings)
         has_var = plan is not None
+        if has_var:
+            _check_layer_grid(settings, plan)
+        if has_var:
+            _check_scan_domain(settings, plan)
         steps = plan[3] if has_var else [None]
 
         x_scan_prev = None
@@ -822,60 +1192,15 @@ def run_file(path, verbose=True):
 
             system_prev_step = system     # previous step's/start's System
             system = System(settings)
-            seg_now = tuple(s.name for s in system.it_species)
-            M_now, fjc_now = system.lat.M, system.lat.fjc
-            if x_prev is None:
-                seed = None
-            elif fjc_now != fjc_prev:
-                seed = None                   # different problem structure
-                x_scan_prev = None
-                print(f"start {start_i}{tag}: FJC_choices changed -- "
-                      "starting COLD (no warm seed across a lattice "
-                      "refinement change)")
-            elif seg_now != seg_prev:
-                # the iteration-species list changed (a species added or
-                # removed): warm by NAME on the same grid, else say so
-                seed = (_seed_by_species(x_prev, system_prev_step, system)
-                        if M_now == M_prev else None)
-                x_scan_prev = None
-                if seed is None:
-                    print(f"start {start_i}{tag}: the iteration species "
-                          "AND the grid changed -- starting COLD; a "
-                          "symmetry-broken previous state may not survive "
-                          "(change one at a time to keep the warm start)")
-            elif x_prev.size != system.n_var():
-                if M_now == M_prev:
-                    # same grid and species, but a trailing block appeared or
-                    # disappeared (a delta constraint toggled between starts;
-                    # block order: species, psi, beta -- only the TAIL can
-                    # change when seg/M/fjc are equal). Keep the potential
-                    # blocks warm and zero-seed the new tail (beta = 0 is the
-                    # cold value). Load-bearing for the nucleation-barrier
-                    # workflow: start 1 nucleates a droplet via a pinned mon,
-                    # start 2 releases it and adds the constraint -- a cold
-                    # restart there would find the uniform solution instead.
-                    nv = system.n_var()
-                    seed = (np.concatenate([x_prev,
-                                            np.zeros(nv - x_prev.size)])
-                            if x_prev.size < nv else x_prev[:nv].copy())
-                else:
-                    seed = _remap_layers(x_prev, len(seg_now), M_prev, M_now)
-                    if seed is not None and seed.size != system.n_var():
-                        seed = None
-                    if seed is None:
-                        # never cold-start silently (review 6 Oct 2026,
-                        # #26): say so, a branch change may follow
-                        print(f"start {start_i}{tag}: n_layers changed "
-                              "together with the unknowns' layout -- "
-                              "starting COLD; check the output for a "
-                              "branch change (change one at a time to keep "
-                              "the warm start)")
-                x_scan_prev = None
-            else:
-                seed = x_prev
-                if (has_var and subl >= 2 and x_scan_prev is not None
-                        and x_scan_prev.size == x_prev.size):
-                    seed = 2.0 * x_prev - x_scan_prev
+            # the warm seed (`_warm_seed`): x_prev reused when nothing
+            # structural changed, else remapped / copied by name / cold
+            # with a printed note. Within one var scan, from the third step
+            # on, a secant extrapolation predicts parameter-ramp steps.
+            x_before = x_scan_prev if (has_var and subl >= 2) else None
+            seed, seed_plain, note = _warm_seed(x_prev, system_prev_step,
+                                                system, x_before)
+            if note:
+                print(f"start {start_i}{tag}: {note}")
             if seed is None and start_i == 1 and subl == 0:
                 # analytic initial guess (sys : initial_guess : ...), applied
                 # to the first calculation only, exactly like Namics
@@ -923,9 +1248,11 @@ def run_file(path, verbose=True):
                     print(f"start {start_i}{tag}: search "
                           f"{search[1]}:{search[2]} -> {x_root:.6g} "
                           f"in {super_it} super-iterations")
-            x_scan_prev = x_prev if has_var else None
+            # a secant prediction needs x_{k-1} and x_k on one grid and
+            # layout: only a step seeded plainly from x_prev qualifies (an
+            # N-D reshape at the same M kept the size and used to pass)
+            x_scan_prev = x_prev if (has_var and seed_plain) else None
             x_prev = x
-            seg_prev, M_prev, fjc_prev = seg_now, M_now, fjc_now
             if verbose:
                 phit_dev = np.abs(system.phitot * system.ksam
                                   + (1 - system.ksam) - 1).max()

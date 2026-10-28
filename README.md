@@ -52,9 +52,11 @@ the corrected physics where Namics has confirmed bugs (the fixed-potential
 Poisson factor 2, the refined-lattice bond length, the weak-charge
 free-energy/chemical-potential index terms, the fixed-potential electrode's
 field energy and work term, the free-energy term of states with different χ,
-the `critical_ratio` composition) or where a Namics output column is not the
+the `critical_ratio` composition, the refined curved lattice's axis bonds and
+`surface` walls) or where a Namics output column is not the
 quantity its name promises (`Laplace_pressure` is the two-sided pressure
-difference; moments of a vanishing excess print `nan`) — each noted in the
+difference, read past a frozen core at its bulk plateau; moments of a vanishing excess print `nan`, and the moment
+columns skip frozen interior sites) — each noted in the
 relevant section below. Inputs that Namics refuses, and a few it accepts but
 solves wrongly, raise with an explanation instead of running.
 
@@ -62,7 +64,8 @@ solves wrongly, raise with an explanation instead of running.
 
 - **Input**: the Namics `key : name : parameter : value` format, `//`
   comments, `start` blocks (settings accumulate, like Namics), `alias`
-  (`#N#` substitution), and `var` parameter scans (`scan`/`step`/`end_value`),
+  (`#N#` substitution in compositions, `n_layers`, and `sys`/`newton`
+  values), and `var` parameter scans (`scan`/`step`/`end_value`),
   including alias scans (`scan : N-value`).
 - **Lattice**: one, **two, or three gradient directions** (`gradients : 1/2/3`),
   as in Namics. 1-gradient: planar, cylindrical, spherical, `simple_cubic`
@@ -75,8 +78,9 @@ solves wrongly, raise with an explanation instead of running.
   `periodic`); one unified finite-volume lattice handles every geometry.
 - **mon**: `freedom` free / frozen / pinned, `frozen_range` / `pinned_range`
   (1-gradient `1;3`, `lowerbound`, `upperbound`, `firstlayer`, `lastlayer`;
-  2D/3D box grammar `xlo,ylo[,zlo];xhi,yhi[,zhi]`), `chi_X` interaction
-  parameters.
+  2D/3D box grammar `xlo,ylo[,zlo];xhi,yhi[,zhi]` with Namics' per-axis
+  tokens, so `1,lowerbound;10,lowerbound` = `1,0;10,0` = `lowerbound_y` is a
+  wall on the lower y face), `chi_X` interaction parameters.
 - **mol**: linear multi-block compositions `(X)1(A)200(G)1` AND **branched
   architectures** — bracket side chains `(C)18[(O)1](O)1...` (nestable;
   several `[..][..]` on one node), symmetric dendrimers/stars
@@ -132,8 +136,10 @@ solves wrongly, raise with an explanation instead of running.
   each site's Poisson faces sit at r ± 1/(2·fjc) around the site, where Namics
   puts them half a refined cell inward — so expect a deviation from an
   unpatched Namics on that combination (planar refined charged runs share the
-  bond-length correction). Curved fixed-potential electrodes
-  raise a clear message.
+  bond-length correction). Curved fixed-potential electrodes, and
+  fixed-potential electrodes on refined lattices (`FJC_choices > 3`; use
+  `FJC_choices : 3` or a fixed-charge `valence` wall), raise a clear
+  message.
 - **Weak (multistate) charges**: `state : AH : mon : A` + `state : AH :
   valence : 0` attach annealed internal states to a segment;
   `reaction : weak : equation : 1(AH) + 1(H2O) = 1(AM) + 1(H3O)` +
@@ -171,10 +177,12 @@ solves wrongly, raise with an explanation instead of running.
 - **Output**: `.kal` (header + one row per calculation/var step, `%.16e`)
   and `.pro` (x at half-integer layers + `%.20g` columns), with Namics file
   numbering. Unknown output properties print `NiN` plus a warning — exactly
-  like Namics. Implemented kal properties: `sys` grand_potential,
-  free_energy (and `free_energy (po)`), the characteristic function `X`
-  (declared with `sys : NN : X : F-water-Na-Cl`, as in Namics), iterations,
-  residual; `lat`
+  like Namics (a known property with no value for the state prints `NiN`
+  with a note giving the reason). Implemented kal properties: `sys`
+  grand_potential, free_energy (and `free_energy (po)`), electrode_charge
+  (the σ of a fixed-potential electrode; PySFBox extension), the
+  characteristic function `X` (declared with
+  `sys : NN : X : F-water-Na-Cl`, as in Namics), iterations, residual; `lat`
   n_layers / volume; `mol` theta, theta_exc, phibulk, Mu/mu (chemical
   potential), mu-STATE, n, N, chainlength, GN, phiM, phiMax, phiMin,
   `<alias>-value`; `mon` theta, theta_exc, phibulk, chi_X,
@@ -196,8 +204,9 @@ The **one-gradient** path (planar / cylindrical / spherical, including
 three-gradient** lattices — 2D flat, 2D cylindrical (r,z), 3D flat, as in
 Namics — currently cover neutral linear chains on `simple_cubic`; charged and
 branched systems there need `gradients : 1`. Curved fixed-potential
-electrodes raise. For weak charges, unbalanced reactions and states on frozen
-monomers are rejected (the latter also in Namics).
+electrodes, and fixed-potential electrodes at `FJC_choices > 3`, raise.
+For weak charges, unbalanced reactions and states on frozen monomers are
+rejected (the latter also in Namics).
 
 ## Extending (where things live)
 
@@ -234,8 +243,9 @@ converges via the extended rescue and matches the compiled Namics exactly.
 Genuine non-convergence still fails *gracefully* (a clear "no convergence"
 message with actionable advice, never a wrong number), and a converged
 state is audited before it is written out: one whose restricted amounts,
-bulk composition, incompressibility or electroneutrality do not add up is
-refused with an `input audit` error (see REFERENCE.md). `var` scans
+bulk composition, incompressibility or electroneutrality do not add up, or
+with a negative density, is refused with an `input audit` error (see
+REFERENCE.md). `var` scans
 warm-start each step from the previous solution — ramping a parameter
 (e.g. a co-solvent) is the intended way into hard regimes.
 

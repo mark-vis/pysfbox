@@ -68,11 +68,24 @@ class Segment:
         self.on_upper_surface = False
         self.surface_face = None            # (axis, 'lo'|'hi') for ND walls
         self.in_ghost = False               # wall lives in a ghost layer
-        rng = last(params, "frozen_range") or last(params, "pinned_range")
         if self.freedom in ("frozen", "pinned"):
+            # the range keyword must MATCH the freedom (Namics
+            # segment.cpp:306-312/388-395). It used to be picked by presence,
+            # frozen_range first, so a leftover frozen_range line (or a
+            # frozen start converted to pinned -- settings accumulate) put
+            # the graft on the frozen range, silently (review 27 Oct 2026,
+            # #25). A stale other-freedom line from an earlier start is
+            # ignored here; the first start refuses it (_check_first_start)
+            key = f"{self.freedom}_range"
+            rng = last(params, key)
             if rng is None:
-                raise ValueError(f"mon {name}: freedom {self.freedom} "
-                                 f"requires a {self.freedom}_range")
+                other = ("pinned_range" if self.freedom == "frozen"
+                         else "frozen_range")
+                raise ValueError(
+                    f"mon {name}: freedom {self.freedom} requires a {key}"
+                    + (f" (found {other}; the range keyword must match the "
+                       "freedom)" if last(params, other) is not None
+                       else ""))
             self._set_range(rng)
         if self.in_ghost and (self.valence != 0.0 or self.fixed_psi0):
             # the Poisson rows are interior-only: a charge (or an electrode)
@@ -104,19 +117,21 @@ class Segment:
         # (cf. Namics segment.cpp: r[0]*=fjc; r[3]=(r[3]+1)*fjc-1).
         lat = self.lat
         if getattr(lat, "gradients", 1) > 1:
-            # 2D/3D box grammar 'xlo,ylo[,zlo];xhi,yhi[,zhi]' (Namics), or a
-            # 'lowerbound'/'upperbound' wall on the first axis
+            # 2D/3D box grammar 'xlo,ylo[,zlo];xhi,yhi[,zhi]' with Namics'
+            # per-axis tokens (a full face in the ghost plane 0 / n+1 is a
+            # wall in the boundary layer), or 'lowerbound'/'upperbound' (the
+            # first axis) / 'lowerbound_y', ... -- LatticeND.parse_range
             self.range_mask, self.surface_face = lat.parse_range(rng)
             if self.surface_face is not None:
                 axis, end = self.surface_face
                 self.on_lower_surface = (axis == 0 and end == "lo")
                 self.on_upper_surface = (axis == 0 and end == "hi")
                 if not np.any(self.range_mask):
-                    # 'lowerbound'/'upperbound': a wall in the GHOST band
-                    # only (an interior face box keeps its own layer)
+                    # a wall in the GHOST band only (lowerbound_y, '1,0;nx,0',
+                    # ...; an interior face box keeps its own layer)
                     self._check_ghost_wall(
                         "lower" if end == "lo" else "upper",
-                        lat.bounds[axis][0 if end == "lo" else 1])
+                        lat.bounds[axis][0 if end == "lo" else 1], axis=axis)
             return
         fjc = lat.fjc
         n = lat.MX // fjc                    # physical layers
@@ -160,13 +175,14 @@ class Segment:
         if self.on_upper_surface:
             self._check_ghost_wall("upper", lat.upperbound)
 
-    def _check_ghost_wall(self, side, bound):
+    def _check_ghost_wall(self, side, bound, axis=None):
         """A range in the GHOST layer (lowerbound/upperbound, or coordinate
         0/n+1) is a solid wall only if the lattice bound on that face is
         'surface': with a mirror (or periodic) bound the free species fill
         the same ghost by reflection, so the wall's layer is occupied twice
         and chains reflect off it instead of losing those steps (review 6
-        Oct 2026, #10; Namics refuses it, segment.cpp:478-487)."""
+        Oct 2026, #10; Namics refuses it, segment.cpp:478-487). `axis` is
+        the face's axis on an N-D lattice (the advice names its keys)."""
         self.in_ghost = True
         if self.freedom != "frozen":
             raise ValueError(
@@ -174,11 +190,23 @@ class Segment:
                 f"{side} boundary (ghost) layer -- only a frozen wall can; "
                 "use interior layers")
         if bound != "surface":
+            if axis is None:
+                key, alt = f"{side}bound", "1;1"
+            else:
+                # N-D: the per-axis bound key and an interior face box
+                lat = self.lat
+                key = f"{side}bound_{'xyz'[axis]}"
+                lay = ("1" if side == "lower" else str(lat.dims[axis]))
+                lo = ["1" if b != axis else lay
+                      for b in range(lat.gradients)]
+                hi = [str(lat.dims[b]) if b != axis else lay
+                      for b in range(lat.gradients)]
+                alt = f"{','.join(lo)};{','.join(hi)}"
             raise ValueError(
                 f"mon {self.name}: frozen wall at the {side} boundary needs "
-                f"'lat : ... : {side}bound : surface' (got '{bound}'); "
+                f"'lat : ... : {key} : surface' (got '{bound}'); "
                 "alternatively put the wall on an interior layer, e.g. "
-                "frozen_range : 1;1")
+                f"frozen_range : {alt}")
 
     def chi_with(self, other):
         # chi table is symmetric; defined on either side, default 0
@@ -674,6 +702,26 @@ class Molecule:
         self.phibulk = float(last(params, "phibulk", 0.0))
         self.n = float(last(params, "n", 0.0))
         self.theta = float(last(params, "theta", self.n * self.N))
+        # amounts outside their domain have no physical state: a negative
+        # free phibulk ran the empty molecule while the bulk closure, the
+        # excess and Omega used the negative number (theta_exc = L|phibulk|),
+        # a negative theta/n ran theta = 0 under the declared label (review
+        # 27 Oct 2026, #32; Namics molecule.cpp:421/506 refuses both).
+        # Written as 'not (..)' so NaN is refused too; the solvent's and
+        # the neutralizer's phibulk are set by the bulk closure, not declared
+        if self.freedom == "free" and not (0.0 <= self.phibulk <= 1.0):
+            raise ValueError(
+                f"mol {name}: phibulk {self.phibulk:g} is out of range "
+                "0 .. 1 (a bulk volume fraction; 'phibulk : 0' switches "
+                "the molecule off)")
+        if self.freedom == "restricted":
+            for key in ("theta", "n"):
+                if last(params, key) is not None \
+                        and not (getattr(self, key) >= 0.0):
+                    raise ValueError(
+                        f"mol {name}: {key} {getattr(self, key):g} is out "
+                        f"of range (an amount, >= 0; '{key} : 0' switches "
+                        "the molecule off)")
         self.phi_per_seg = {}   # segment name -> profile
         self.phi = np.zeros(lat.M)
         self.GN = 0.0
@@ -799,7 +847,10 @@ class Molecule:
         elif self.freedom == "restricted":
             if not np.isfinite(self.lnGN):
                 raise FloatingPointError(f"mol {self.name}: GN <= 0")
-            lnC = np.log(self.theta / N) - self.lnGN
+            # theta 0 (an absent restricted molecule): lnC = -inf without
+            # a log(0) RuntimeWarning; handled as zero density below
+            lnC = (np.log(self.theta / N) - self.lnGN
+                   if self.theta > 0 else -np.inf)
             # phibulk (the implied bulk density theta/GN, or 0 when grafted)
             # is owned and updated per iteration by System.compute_phis
         else:

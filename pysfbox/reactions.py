@@ -150,6 +150,18 @@ def solve_bulk_alphas(states_by_mon, reactions, tol=1e-14, maxiter=200):
                 f"reaction {r.name}: not electroneutral (net valence "
                 f"change {dv:+g})")
 
+    # an anchor is a bulk state fraction: outside (0, 1) the solve used to
+    # die with a bare 'math domain error' / 'math range error' naming
+    # neither the state nor the range (review 27 Oct 2026, #44; Namics
+    # state.cpp:84 refuses it too). Exactly 1 is refused as well: the mon's
+    # other states would get zero, which the ln(alpha) unknowns cannot hold
+    for mon, ss in states_by_mon.items():
+        for s in ss:
+            if s.alphabulk_given and not (0.0 < s.alphabulk < 1.0):
+                raise ValueError(
+                    f"state {s.name} (mon {mon}): alphabulk {s.alphabulk:g} "
+                    "is outside (0, 1) -- it is a bulk state fraction "
+                    "(Namics: out of range 0 ... 1)")
     anchored = {s.name: s.alphabulk
                 for ss in states_by_mon.values() for s in ss
                 if s.alphabulk_given}
@@ -164,6 +176,17 @@ def solve_bulk_alphas(states_by_mon, reactions, tol=1e-14, maxiter=200):
             f"{len(states_by_mon)} normalisations + {len(reactions)} "
             "reactions; give exactly enough 'state : X : alphabulk' anchors "
             "to close the system (e.g. one for H3O to set the pH)")
+    # the anchors of one mon must leave room for its unanchored states (a
+    # fully anchored mon is refused by the count above; review #44)
+    for mon, ss in states_by_mon.items():
+        tot = sum(s.alphabulk for s in ss if s.alphabulk_given)
+        if any(not s.alphabulk_given for s in ss) and not tot < 1.0:
+            raise ValueError(
+                f"mon {mon}: the alphabulk anchors ("
+                + ", ".join(f"{s.name} {s.alphabulk:g}" for s in ss
+                            if s.alphabulk_given)
+                + f") sum to {tot:g} >= 1, leaving nothing for its "
+                "unanchored states (the state fractions of a mon sum to 1)")
 
     # initial guess: split what the anchors leave over equally per mon
     x = np.empty(len(free))

@@ -1,0 +1,57 @@
+// Laplace_pressure of a droplet around a FROZEN CORE (28 Oct 2026). An
+// oil droplet ((O)20, chi 1.2, theta 20000) is nucleated on a frozen X
+// core (layers 1-4) of a 40-layer sphere, released, and its theta then
+// searched for Laplace_pressure = 0.012.
+// Before the fix the kal column read omega at the FROZEN first layer
+// (omega = 0 there), so it printed ~1e-16 for every cored droplet, and a
+// Laplace_pressure search accepted its first probe. Now a frozen end is
+// read at the bulk plateau past it (System._laplace_sites; a one-time note
+// names the site).
+// Checked at creation (28 Oct 2026): row 2 = 1.16996e-2 = -omega at the
+// plateau site x = 11.5, equal to the Flory-Huggins pressure difference
+// Pi(phi_in) - Pi(phi_out) of the plateau and far-field compositions
+// (0.7597968 / 2.714e-4) to 5e-5 relative (the plateau is flat to 4e-5);
+// the coreless twin prints 1.21771e-2 (R_e 18.42 vs 19.58 here: gamma =
+// dp R_e/2 = 0.1121 vs 0.1146, the 2 % expected from R_e vs R_s and the
+// curvature corrections). Row 3: the search converges to dp = 0.012 in 11
+// probes (theta 28754.6). Row 1 (pinned) is the plateau of the pinned
+// state. The thin shell with no plateau (NiN, and a search that raises)
+// is guarded in tests/input_guards.py. DELIBERATE deviation from Namics
+// (oracle 3e9eafd, 28 Oct 2026, starts 1-2): its
+// grand_potential_density profile equals ours (6e-9 at the plateau site)
+// but it prints Laplace_pressure = -0 for both rows (-omega at the frozen
+// layer, system.cpp:1530), and its Laplace_pressure search error
+// (system.cpp:1436) reads the same frozen layer.
+lat : NN : geometry : spherical
+lat : NN : n_layers : 40
+lat : NN : lowerbound : mirror
+mon : X : freedom : frozen
+mon : X : frozen_range : 1;4
+mon : O : freedom : pinned
+mon : O : pinned_range : 5;20
+mon : W : freedom : free
+mon : O : chi_W : 1.2
+mol : oil : composition : (O)20
+mol : oil : freedom : restricted
+mol : oil : theta : 20000
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+newton : n : tolerance : 1e-9
+output : kal : append : false
+kal : mol : oil : theta
+kal : sys : NN : Laplace_pressure
+kal : sys : NN : grand_potential
+output : pro : append : false
+pro : sys : NN : grand_potential_density
+pro : mol : oil : phi
+
+start
+
+mon : O : freedom : free
+
+start
+
+var : mol-oil : search : theta
+var : sys-NN : Laplace_pressure : 0.012
+
+start

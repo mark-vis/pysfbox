@@ -311,21 +311,92 @@ class LatticeND:
         """Return (flat interior mask, face) for a frozen/pinned range string.
         `face` is (axis, 'lo'|'hi') if the box is a single boundary-adjacent
         layer flush against a wall (so a frozen wall can fill the ghost face),
-        else None. Coordinates are 1-based interior indices per axis; a
-        Namics 'lowerbound'/'upperbound' along axis 0 is also accepted."""
+        else None. Coordinates are 1-based interior indices per axis.
+        Namics' per-axis tokens are translated per coordinate (segment.cpp,
+        frozen_range): 'firstlayer' -> 1, 'lastlayer' -> n_a, 'lowerbound'
+        -> 0, 'upperbound' -> n_a + 1, and an integer may be 0..n_a + 1; the
+        coordinates 0 and n_a + 1 are the GHOST planes. A box in a ghost
+        plane is a wall in the boundary layer -- returned as an EMPTY mask
+        with its face -- only if it is that plane on exactly one axis and
+        spans the full face on every other axis (`1,lowerbound;nx,lowerbound`
+        = `1,0;nx,0` = the lower y face); any other use of a ghost coordinate
+        raises. Whole-string shorthands: 'lowerbound'/'upperbound' (the first
+        axis, as in Namics) and 'lowerbound_x|y|z'/'upperbound_x|y|z'."""
         r = rng.strip().lower().rstrip(";")
         mask = np.zeros(self.pdims, dtype=bool)
+        axes = "xyz"[:self.gradients]
         if r in ("lowerbound", "upperbound"):
             # a wall on the first axis' lower/upper face (Namics 1D idiom)
             face = (0, "lo" if r == "lowerbound" else "hi")
             return np.zeros(self.M, dtype=bool), face
+        if r[:-2] in ("lowerbound", "upperbound") and r[-2:-1] == "_":
+            # Namics' single keywords lowerbound_y, upperbound_z, ...
+            if r[-1] not in axes:
+                raise ValueError(
+                    f"range '{rng}': there is no {r[-1]} axis with "
+                    f"gradients : {self.gradients}")
+            face = (axes.index(r[-1]), "lo" if r[0] == "l" else "hi")
+            return np.zeros(self.M, dtype=bool), face
+        grammar = ("grammar 'xlo,ylo[,zlo];xhi,yhi[,zhi]' with 1-based layer "
+                   "numbers or the per-axis tokens firstlayer, lastlayer, "
+                   "lowerbound (= 0) and upperbound (= n + 1)")
         lo_txt, _, hi_txt = r.partition(";")
-        los = [int(v) for v in lo_txt.split(",")]
-        his = [int(v) for v in hi_txt.split(",")] if hi_txt else los
-        if len(los) != self.gradients or len(his) != self.gradients:
+        lo_tok = [v.strip() for v in lo_txt.split(",")]
+        hi_tok = [v.strip() for v in hi_txt.split(",")] if hi_txt else lo_tok
+        if len(lo_tok) != self.gradients or len(hi_tok) != self.gradients:
             raise ValueError(
                 f"range '{rng}' needs {self.gradients} coordinates per corner "
-                f"(got {len(los)}); grammar 'xlo,ylo[,zlo];xhi,yhi[,zhi]'")
+                f"(got {len(lo_tok)}); {grammar}")
+
+        def coord(tok, a):
+            n = self.dims[a]
+            words = {"firstlayer": 1, "lastlayer": n, "lowerbound": 0,
+                     "upperbound": n + 1}
+            if tok in words:
+                return words[tok]
+            try:
+                return int(tok)
+            except ValueError:
+                raise ValueError(f"range '{rng}': '{tok}' is not a "
+                                 f"coordinate on the {axes[a]} axis; "
+                                 f"{grammar}") from None
+
+        los = [coord(t, a) for a, t in enumerate(lo_tok)]
+        his = [coord(t, a) for a, t in enumerate(hi_tok)]
+        for a, (lo, hi) in enumerate(zip(los, his)):
+            # an out-of-box coordinate used to slice silently into a ghost
+            # plane or an empty mask
+            if not 0 <= lo <= hi <= self.dims[a] + 1:
+                raise ValueError(
+                    f"range '{rng}': {axes[a]} span {lo}..{hi} is not within "
+                    f"the {self.dims[a]} layers (lo <= hi, 1-based; 0 and "
+                    f"{self.dims[a] + 1} are the boundary walls)")
+        ghost = [a for a in range(self.gradients)
+                 if los[a] == 0 or his[a] == self.dims[a] + 1]
+        if ghost:
+            # the boundary (ghost) planes hold a WALL only: one face, whole
+            if len(ghost) > 1:
+                raise ValueError(
+                    f"range '{rng}' reaches the boundary layer on more than "
+                    "one axis; a frozen wall fills ONE face (declare one "
+                    "frozen mon per face for a corner or a channel)")
+            a = ghost[0]
+            if los[a] != his[a]:
+                raise ValueError(
+                    f"range '{rng}' spans the {axes[a]} boundary layer AND "
+                    "interior layers; a wall in the boundary layer is its own "
+                    "frozen mon (e.g. "
+                    + ("lowerbound" if los[a] == 0 else "upperbound")
+                    + f"_{axes[a]}), an interior block another")
+            if not all(los[b] == 1 and his[b] == self.dims[b]
+                       for b in range(self.gradients) if b != a):
+                raise ValueError(
+                    f"range '{rng}' is a partial patch in the {axes[a]} "
+                    "boundary layer; a wall there must cover the whole face "
+                    "(1..n on every other axis) -- put a patch on the first "
+                    "interior layer instead")
+            face = (a, "lo" if los[a] == 0 else "hi")
+            return np.zeros(self.M, dtype=bool), face
         sl = tuple(slice(lo, hi + 1) for lo, hi in zip(los, his))
         mask[sl] = True
         # detect a wall face: a box one layer thick against a boundary AND
@@ -343,13 +414,15 @@ class LatticeND:
                     face = (a, "lo" if los[a] == 1 else "hi")
         return mask.ravel(), face
 
-    def moment(self, X, Xb, n, axis=0):
+    def moment(self, X, Xb, n, axis=0, weight=None):
         """n-th moment of (X - Xb) along `axis` (the radial/first axis by
         default), volume weighted -- e.g. the radial extent of an adsorbed
         layer. The coordinate is measured from the FIRST LAYER (offset
         subtracted on a radial axis), matching Lattice1D.moment / the Namics
         LGrad1 convention so 1D and N-D report the same moment for the same
-        physical density."""
+        physical density. `weight` (a full-length site mask, System.ksam)
+        restricts the sum to the free sites, as Lattice1D.moment (review
+        27 Oct 2026, #39)."""
         _, _, ctr, _ = self._axis_geom(axis)
         c = np.broadcast_to(ctr, self.pdims).astype(float)
         if self.roles[axis] == "r":
@@ -357,4 +430,6 @@ class LatticeND:
         Xg = X.reshape(self.pdims)
         Lg = self.L.reshape(self.pdims)
         w = (Xg[self.iv] - Xb) * Lg[self.iv]
+        if weight is not None:
+            w = w * np.asarray(weight).reshape(self.pdims)[self.iv]
         return float((c[self.iv] ** n * w).sum())

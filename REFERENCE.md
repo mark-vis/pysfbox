@@ -114,8 +114,10 @@ repeat, e.g. several output-spec lines); normal settings use override semantics
 (the last value), output specs use the whole list.
 
 **`alias` (`#N#` substitution)** — `alias : X : value : v` defines a
-textual substitution: every `#X#` (in a composition string, or an `n_layers`
-value) is replaced by `v` before that field is parsed. Useful for a chain
+textual substitution: every `#X#` in a field of the substitution scope (the
+exact list is under `alias` in "Scans, search, ranges, and aliases"; in short a
+composition string, an `n_layers` value, and the `sys` and `newton` values) is
+replaced by `v` before that field is parsed. Useful for a chain
 length used in several places, and an alias can itself be the scanned quantity
 (`var : alias-X : scan : value`, or the `scan : X-value` shorthand on any `var`
 block, e.g. `var : mol-pol : scan : N-value`).
@@ -125,12 +127,15 @@ alias : N : value : 100
 mol : poly : composition : (A)#N#      // becomes (A)100
 ```
 
-**Entering numbers** — a field is read as numeric only if it starts with a
-digit (or `-` then a digit); scientific notation (`1e-6`, `6.02E23`) is
-accepted, but a leading dot is not (`.34` falls back to the default). A field
-that does not start that way (e.g. a stray `e-10` typo) is treated as
-unparseable and the parameter falls back to its default — matching Namics'
-`Input::Get_Real`.
+**Entering numbers** — fields are parsed with Python's `float()`: scientific
+notation (`1e-6`, `6.02E23`) and a leading dot (`.34`) are accepted, and an
+unparseable value (a stray `e-10` typo) raises naming the value. The one
+exception is the numeric **`newton`** keys (`tolerance`, `iterationlimit`,
+`deltamax`, `m` and the `super_*` keys): there, as in Namics'
+`Input::Get_Real`, a value counts as numeric only if it starts with a digit (or
+`-` then a digit), and anything else (`.5`, `e-10`, an undefined `#TOL#`) falls
+back to the solver default. Namics does that silently; PySFBox prints one
+`warning: newton : ... is not a number ... using the default` line per value.
 
 ### Output file naming
 
@@ -153,9 +158,14 @@ and no method guarantees convergence. The most effective tool is a
 starts from the previous converged solution, so ramping a hard parameter (a
 co-solvent, chi, wall separation) gently into a stiff regime is the documented
 way in. When only `n_layers` changes, the previous potentials are remapped onto
-the new grid; when a start adds or removes a species on the same grid, the
+the new grid; on 2-D/3-D lattices (`n_layers_x/y/z`, or a box whose axes are
+swapped at the same total size) the lower-wall and upper-wall halves are kept
+separately along every axis, so each kept cell stays at its lattice
+coordinate. When a start adds or removes a species on the same grid, the
 potentials are copied by species name and the new species start at u = 0
-(Namics does the same). A start that cannot be warm-started (the grid AND the
+(Namics does the same); when the electrostatic potential or a `delta`
+constraint is switched on or off, every other block keeps its value and the
+new one starts at 0. A start that cannot be warm-started (the grid AND the
 unknowns' layout changed together, or `FJC_choices` changed) says so and starts
 cold. Large cells converge more easily from below: if a cold start of a
 big box stalls (e.g. a large sphere around a long charged chain at low
@@ -195,7 +205,9 @@ smaller cell or more salt helps.
   `newton` `method` or `engine`** prints a `note:` and falls back to the default
   solver / NumPy residual.
 - An **unknown output property** is written as `NiN` in the `.kal` (and skipped
-  in the `.pro`), with a `warning:` on the console — like Namics.
+  in the `.pro`), with a `warning:` on the console — like Namics. A known
+  property that has no value for this state is also `NiN`, but with a
+  `note:` giving the reason instead of the `unknown` warning.
 - A **genuinely unsupported feature raises `NotImplementedError`** naming the
   feature and the alternative (e.g. "use the full Namics"), never a silently
   wrong number.
@@ -206,7 +218,10 @@ smaller cell or more salt helps.
   `search` (super-iteration), a failed inner solve reports the probe value and
   start, suggests a smaller `super_deltamax` when the probe step was large
   (the bracket probes by a factor 1 + `super_deltamax`), and otherwise points
-  at an unreachable/non-monotone target.
+  at an unreachable/non-monotone target. A failure at the search's FIRST
+  probe (the start value itself, before any search step) names the scan
+  step instead: the change since the previous converged state is too large,
+  declare a finer scan step.
 - **Post-solve input audit.** A converged residual proves the field
   equations hold, not that every requirement of the input does, so every
   accepted state is audited before it is written out, and a state that
@@ -230,7 +245,13 @@ smaller cell or more salt helps.
   - *electroneutrality* (charged systems): the box, including any fixed
     and frozen charges and the charge a fixed-ψ0 electrode takes up, is
     neutral to the bound the converged Poisson rows imply (exact for a
-    flux-conservative stencil with the mirror ψ boundaries).
+    flux-conservative stencil with the mirror ψ boundaries);
+  - *non-negative density*: every molecule's φ ≥ 0 on the free sites (to
+    1e-12 of its maximum). Automatic for a stencil with non-negative
+    weights; the one accepted exception is the refined cylinder at
+    `offset_first_layer : 0` with `FJC_choices` ≥ 11 (see
+    `offset_first_layer`), where a field that changes sharply next to the
+    axis could drive φ negative.
 
 Convergence quality is also visible in the run log, which prints
 `converged in <it> iterations, max|g| = …, max|phi_T-1| = …` per calculation.
@@ -258,10 +279,10 @@ lat : L : n_layers : 100
 | `gradients` | `1`, `2`, `3` | `1` | number of spatial gradients; selects the 1-gradient `Lattice1D` or the N-gradient `LatticeND`. Any other value raises. |
 | `geometry` | see tables below | `planar` (1D) / `flat` (N-D) | coordinate system. `flat` and `planar` are synonyms. |
 | `lattice_type` | `simple_cubic`, `hexagonal` | `simple_cubic` | sets the neighbour-transition weight λ (`simple_cubic` → 1/6, `hexagonal` → 1/4). N-D accepts `simple_cubic` only. |
-| `lambda` | real in (0, ½) | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). Honoured on the 1-gradient lattice at `FJC_choices 3` only; with `FJC_choices > 3` or `gradients > 1` (whose stencils have no λ to replace) it raises. |
+| `lambda` | real, 0 < λ ≤ ½ | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). Honoured on the 1-gradient lattice at `FJC_choices 3` only; with `FJC_choices > 3` or `gradients > 1` (whose stencils have no λ to replace) it raises. A λ that leaves a negative or zero step weight in any layer raises `ValueError` (since 28 Oct 2026; before, the walk was no random walk and densities could leave [0, 1] with a converged status): 0 < λ ≤ ½ on planar and cylindrical lattices, λ ≤ 1/3 on a sphere at `offset_first_layer : 0` (its first layer keeps 1 − 3λ), in between at a positive offset. |
 | `n_layers` | integer | *(required, 1D)* | number of physical layers z = 1..n_layers (see FJC refinement). Missing or non-integral raises (e.g. an alias expression giving 20.5; a value is never truncated). |
 | `FJC_choices` | `3`, `5`, `7`, … | `3` | lattice refinement (freely-jointed-chain sub-layers). `3` = unrefined (fjc = 1). |
-| `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries; **ignored on planar lattices**, as in Namics — it no longer shifts the planar `.pro` x column), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. With a `mirror` lowerbound the inner mirror at r = offset folds the refined inward bonds symmetrically (since 7 Oct 2026; before, they broke detailed balance: θ of a restricted brush missed its input and GN/μ/F depended on the chain orientation). |
+| `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries; **ignored on planar lattices**, as in Namics — it no longer shifts the planar `.pro` x column), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. With a `mirror` lowerbound the inner mirror folds the refined inward bonds back with, for each bond and its mirror image, the smaller of their two free-space face areas (since 28 Oct 2026): detailed balance holds and no folded weight exceeds its free-space value, so the site average stays a probability average. The 7 Oct 2026 rule (the face midway between site and image) was reciprocal too, but went negative at small offsets (a stay weight of −0.19 for a sphere at `FJC_choices : 11`, offset 0.5), and a sharp field there could give φ < 0; before 7 Oct the bonds broke detailed balance (θ of a restricted brush missed its input, GN/μ/F depended on the chain orientation). The fold is an O(b/R) convention that does not vanish under refinement (Namics books the unreciprocated forward weight). Every refined curved lattice is checked when it is built: a negative transition weight or a broken detailed balance raises `ValueError` (with the fold above this is left for a sphere at `FJC_choices` ≥ 35 and offsets below about 0.01). One case is accepted with a note: a cylinder at `offset_first_layer : 0` and `FJC_choices` ≥ 11 has a negative stay weight on its axis row (−0.075 at 11, −0.725 at 21; the same rows as Namics), and every converged state is then audited for φ ≥ 0 (a negative density raises; remedy `FJC_choices` ≤ 9 or `offset_first_layer` > 0). With a `surface` lowerbound the solid core r < offset absorbs every refined bond that enters it with the bond's free-space weight (since 28 Oct 2026; before, at 0 < offset < 1 a bond landing behind the axis went back to the stay channel, so wall observables jumped at every offset 1 − k/fjc); a core thinner than 1/2 − 1/fjc bond lengths (0.3 at `FJC_choices : 11`; `FJC_choices : 5` takes any offset) raises `NotImplementedError`. A negative value on a curved lattice raises (since 28 Oct 2026; Namics resets it to 0 with a message). At offset 0 the refined curved stencil decides which bonds end on the axis on the integer site index (since 28 Oct 2026; before, a float round-off kept the bond that ends exactly on the axis at `FJC_choices` 11, 19, 23, 25, 27, 35, 37, 41, 43, … (an irregular set), which broke detailed balance: free molecules were off by 1e-5–3e-4, results depended on the chain orientation, and a restricted molecule lost mass — silently before v1.4.3, refused by the input audit's restricted-amount check since; Namics has the same round-off). |
 | `bondlength` | float in 1e-12..1e-8 (m) | `5e-10` | segment bond length; **only consumed by charged systems** (Poisson prefactor). Out-of-range raises. |
 | `Markov` | `1` | `1` | chain statistics: `1` = fully flexible. |
 
@@ -353,14 +374,26 @@ same physics and warns once.
 - `mirror`: reflect the interior into the ghost layer (zero-flux wall).
 - `surface`: the ghost is a solid/impenetrable wall (density 0 for
   propagators). Frozen surface segments (`mon : S : freedom : frozen`) pin the
-  ghost density explicitly.
+  ghost density explicitly. On refined curved lattices (`FJC_choices` > 3) a
+  bond that reaches into a surface is absorbed with its free-space weight, so
+  a `surface` upper bound equals a frozen shell on a larger `mirror` box
+  (since 28 Oct 2026; before, it was weighted like a mirror fold, and a
+  concave outer wall absorbed less than a planar one: Ω 5 % off on a
+  spherical and 20 % on a cylindrical pore at `FJC_choices : 11`). The
+  compiled Namics folds it like a mirror, so on that input class the two
+  engines disagree by design.
 
 Any other value raises. Namics' 1-gradient `periodic` (the repeat unit of a
 lamellar stack) is not yet ported and raises `NotImplementedError`; the same
 physics runs as `gradients : 2`, `geometry : flat` with
 `lowerbound_x/upperbound_x : periodic` and `n_layers_y : 1`. The N-D keys
 (`lowerbound_x`, ...) raise with `gradients : 1`, and `lowerbound`/`upperbound`
-raise with `gradients : 2/3`.
+raise with `gradients : 2/3`. The same holds for the layer counts: `n_layers_x/y/z`
+(and `theta_range`/`phi_range`) raise with `gradients : 1`, `n_layers` raises
+with `gradients : 2/3` and `n_layers_z` with `gradients : 2` (they used to be
+ignored, and a `var` scan of the ignored key wrote identical rows under changing
+labels). A scan of the other dimensionality's layer key raises before step 0
+(Namics refuses that scan too; a static stray key it accepts silently).
 
 ### Chain statistics (`Markov`)
 
@@ -383,6 +416,11 @@ a padded grid with one ghost layer per side per axis.
 | `n_layers_y` | 2D, 3D | cells along axis 2 |
 | `n_layers_z` | 3D | cells along axis 3 |
 
+N-D box sizes are whole layers (a fractional value or step raises). An
+alias-driven (`n_layers_x : #H#`) or exponential `n_layers_x/y/z` scan is
+checked against that before step 0, so an off-grid rung raises before any row
+is written.
+
 **Geometry** (`geometry`, default `flat`; axis roles: `x`/`z` Cartesian, `r`
 radial, `theta` colatitude, `phi` azimuth):
 
@@ -404,11 +442,16 @@ radial periodicity raises: the stencil would not conserve mass).
 
 **Box ranges** — frozen/pinned segment ranges on the N-D grid use the
 coordinate grammar `xlo,ylo[,zlo];xhi,yhi[,zhi]` (1-based interior indices per
-axis), or the single-axis idioms `lowerbound` / `upperbound` (a whole wall on
-axis 1). A wrong coordinate count raises `range '...' needs N coordinates per
-corner`. These appear on `mon`/`mol` range lines, not in the `lat` block
-itself. A single-layer box flush against a boundary that spans the *full* face
-is treated as a solid wall; a partial patch stays an interior mask.
+axis, with Namics' per-axis tokens `firstlayer`, `lastlayer`, `lowerbound` =
+0 and `upperbound` = n + 1), or the single keywords `lowerbound` /
+`upperbound` (a whole wall on axis 1) and `lowerbound_x|y|z` /
+`upperbound_x|y|z`. The coordinates 0 and n + 1 are the boundary (ghost)
+layers: `1,lowerbound;nx,lowerbound` = `1,0;nx,0` = `lowerbound_y` is a frozen
+wall on the lower y face. A wrong coordinate count raises `range '...' needs N
+coordinates per corner`. These appear on `mon`/`mol` range lines, not in the
+`lat` block itself. A single-layer box flush against a boundary that spans the
+*full* face is treated as a solid wall; a partial patch stays an interior
+mask.
 
 Other N-D keys: `lattice_type` must be `simple_cubic` (`hexagonal` raises);
 `FJC_choices` must be `3` (refinement > 3 raises); `offset_first_layer` offsets
@@ -474,9 +517,17 @@ interpreted at the `mon` level. Segment output properties (`phi`, `u`, moments,
 Any other value raises (case matters; `Frozen` and `pined` get a
 did-you-mean), and Namics' `tagged`/`clamp` raise `NotImplementedError`. A
 `frozen`/`pinned` segment without the matching range raises
-`freedom <f> requires a <f>_range`, and a `free` segment with a range raises
-(in the first start, as in Namics; a later start may turn a mon free while its
-old range line stays in the accumulated settings). Internal `state` blocks may not be attached
+`freedom <f> requires a <f>_range`: the range is taken from the keyword that
+matches the freedom (`pinned_range` for `pinned`, `frozen_range` for
+`frozen`), never from the other one. In the first start a `free` segment with
+a range raises, and so does a `pinned` segment that also carries a
+`frozen_range` or a `frozen` one that also carries a `pinned_range` (as in
+Namics); a later start may change a mon's freedom while its old range line
+stays in the accumulated settings, and that stale line is ignored. (Before
+28 Oct 2026 a `frozen_range` line won whenever present, so a frozen mon
+converted to pinned in a later start kept its graft on the frozen range,
+silently.)
+Internal `state` blocks may not be attached
 to a `frozen` mon (`states on frozen mons are not allowed … use a pinned mon
 instead`).
 
@@ -499,7 +550,8 @@ lattice bound `surface` on that face** (`lat : ... : lowerbound : surface`;
 with a mirror bound the free species would fill the same ghost by reflection),
 only one segment may occupy a ghost face, only a `frozen` segment may sit
 there, and it may not be charged (`valence`/`e.psi0/kT`: the Poisson equation
-lives on the interior — put a charged wall or electrode on `1;1`). The
+lives on the interior — put a charged wall or electrode on `1;1`; an
+electrode, `e.psi0/kT`, also needs `FJC_choices : 3`, see below). The
 coordinates `0` and `n_layers+1` are the ghost walls too (`0;0` = `lowerbound`,
 as in Namics); coordinates outside `0..n_layers+1` raise. With refined lattices
 (`FJC_choices > 3`, `fjc > 1`), physical layers are expanded to refined sites
@@ -523,9 +575,19 @@ xlo,ylo[,zlo] ; xhi,yhi[,zhi]
 
 Coordinates are 1-based interior indices per axis; each corner must list exactly
 `gradients` coordinates (`range '…' needs N coordinates per corner` otherwise). A
-single corner (no `;`) selects one cell. `lowerbound`/`upperbound` are also
-accepted and refer to the lower/upper face of the **first** axis (and need
-`lowerbound_x`/`upperbound_x : surface`, as in 1-D). A box that is
+single corner (no `;`) selects one cell. Each coordinate may also be one of
+Namics' per-axis tokens `firstlayer` (1), `lastlayer` (n), `lowerbound` (0) or
+`upperbound` (n + 1); 0 and n + 1 are the boundary (ghost) layers, and a box
+there is a wall in that layer only if it is the ghost layer on exactly one axis
+and spans the full face on every other axis (`1,lowerbound;nx,lowerbound` =
+`1,0;nx,0` = the lower y face). A partial patch in a ghost layer, a box that
+spans a ghost layer and interior layers, ghost coordinates on two axes, a
+coordinate outside `0..n+1` and an unknown token raise. `lowerbound`/`upperbound`
+are also accepted as whole strings and refer to the lower/upper face of the
+**first** axis; `lowerbound_x|y|z` / `upperbound_x|y|z` name the face of any
+axis. Every ghost-layer wall needs the `surface` bound on its face
+(`lowerbound_y : surface`, ...; with a mirror bound the advice names the face's
+key and an interior box such as `frozen_range : 1,1;10,1`). A box that is
 one layer thick against a boundary **and spans the full face on every other axis**
 is treated as a solid wall face (its ghost hyperplane is filled). A *partial*
 boundary patch is deliberately kept as an interior box and is **not** promoted to
@@ -590,10 +652,25 @@ state explicitly, and states inherit their parent mon's χ unless overridden.
   **mutually exclusive** with `valence` (`valence and e.psi0/kT are mutually
   exclusive`). A fixed surface potential on a **curved** (cylindrical/spherical)
   lattice raises `fixed surface potential (e.psi0/kT) on a curved lattice is not
-  supported yet`. With an electrode, `grand_potential` and `free_energy` are the
+  supported yet`, and so does one on a **refined** planar lattice
+  (`FJC_choices > 3`; `fixed surface potential (e.psi0/kT) on a refined lattice
+  ... is not ported yet`, raised when the system is built): the electrode
+  anchor assumes one site per layer. Use `FJC_choices : 3`, or a fixed-charge
+  wall (`valence`), which works on refined lattices. The electrode must be a
+  single boundary-adjacent layer (`1;1` or `n;n`); multi-layer or interior
+  electrode blocks raise. With an electrode, `grand_potential` and `free_energy` are the
   **constant-potential** quantities: they include the electrode work term
-  `−½ σ ψ0` (σ = the charge the electrode takes up), so `dΩ/dψ0 = −σ` (the
-  Lippmann relation) holds. The equivalent fixed-charge wall (`valence` = σ at the
+  `−½ σ ψ0` (σ = the charge the electrode takes up). In general
+  `dΩ/dψ0 = −σ − Σ_i n_i dμ_i/dψ0` (sum over all molecules), so the Lippmann
+  relation `dΩ/dψ0 = −σ` holds only when **every molecule is free** (fixed μ).
+  A restricted molecule's μ moves with ψ0: with pinned or grafted restricted
+  molecules only (no bulk presence), `F − Σ_free n μ` is the Lippmann
+  potential; a restricted molecule that also sets the bulk moves the free
+  species' μ too (closure, neutralizer), and a derivative of the printed Ω
+  is then off by percents to tens of percents (measured 1.6 % for an
+  unpinned restricted polyelectrolyte, 52 % for a pinned brush). Read σ
+  directly from the kal column `sys : NN : electrode_charge` instead of
+  differentiating. The equivalent fixed-charge wall (`valence` = σ at the
   same site) reports `Ω_σ = Ω + σψ0`. The field energy that enters the segment
   weights is built from ψ0 at the electrode site. Both are deliberate deviations
   from Namics, which omits the work term and builds the field energy from the
@@ -639,7 +716,7 @@ an unknown monomer raises `mol <name>: unknown mon '<mon>'`.
 |---|---|---|---|
 | `composition` | architecture string (see below) | — (required) | chain sequence/topology |
 | `freedom` | `free`, `restricted`, `solvent`, `neutralizer` | — (required) | how the amount is fixed (see below) |
-| `phibulk` | real ≥ 0 | — (required for `free`) | bulk volume fraction (used by `free`) |
+| `phibulk` | real in [0, 1] | — (required for `free`) | bulk volume fraction (used by `free`) |
 | `theta` | real ≥ 0 | `n * N` (`restricted` needs `theta` or `n`) | total amount ∑<sub>z</sub>L(z)φ(z) (used by `restricted`) |
 | `n` | real ≥ 0 | `0.0` | number of chains; only sets the `theta` default (`theta = n·N`) |
 | `ring` | `true`/`false` | `false` | ring topology — **raises** `NotImplementedError` if true |
@@ -782,7 +859,7 @@ state : H3O : alphabulk : 1e-7
 |---|---|---|---|
 | `mon` | an existing `mon` name | — (required) | the segment type this state belongs to |
 | `valence` | real | `0.0` | state charge in units of `e` (this is what carries the charge) |
-| `alphabulk` | real | unset | anchors the bulk fraction of this state; unset states are solved from the reactions |
+| `alphabulk` | real, 0 < alphabulk < 1 | unset | anchors the bulk fraction of this state; unset states are solved from the reactions. The anchors of one mon must sum to less than 1 (its unanchored states get the rest); a value outside (0, 1) or an anchor sum ≥ 1 raises naming the state, mon and value (Namics refuses values outside 0 ... 1) |
 | `chi_Y` / `chi-Y` | real | inherit mon's | per-state χ override with partner `Y` (a stateless mon or another state) |
 
 States accept **only** those parameters. Anything else — notably `epsilon` or
@@ -1172,6 +1249,16 @@ pro : sys : NN : psi
 - **Unknown props** — a kal prop with no match prints the literal `NiN` and a
   `warning: kal property ... unknown -> NiN` line; an unknown pro prop is
   skipped with a warning. This mirrors Namics exactly.
+- **Gated props** — a RECOGNISED kal prop that has no value for this state
+  (a gate: e.g. `kJ0`, or `X` without its `sys : NN : X` definition) also
+  prints `NiN`, after its own `note:` with the reason, followed by the
+  neutral line `note: kal property ... has no value for this state -> NiN`
+  — never the `unknown` warning, so a deliberate NiN cannot be mistaken for
+  a typo.
+- **Notes are per input file** — notes and warnings that qualify a printed
+  number (the two-sided `Laplace_pressure`, `kJ0`, an undeclared `X`, the
+  setup warnings) are printed once per input file, also when several files
+  run in one process (`pysfbox a.in b.in`).
 
 ### File formats
 
@@ -1238,7 +1325,8 @@ Types: `int` → `%d`, `real` → `%.16e`, `string` → printed bare (like Namic
 | `lat` | `FJC_choices` | int | 2·fjc + 1 (3 on unrefined lattices) |
 | `lat` | `volume` | real | geometric volume of the interior lattice (closed form). On refined curved lattices (`FJC_choices > 3`) the summed site volumes differ from it by a few %, so θ − φ_b·volume is not an excess there; use `theta_exc` |
 | `sys` | `grand_potential` | real | grand potential Ω (per unit area / normalised as in Namics) |
-| `sys` | `Laplace_pressure` | real | the pressure difference across the system, Δp = p<sub>in</sub> − p<sub>out</sub> = −ω(first interior layer) + ω(last interior layer), with ω(z) the grand-potential density (`pro : sys : X : grand_potential_density`, a local −pressure; 1-gradient; at fjc > 1 the first refined site of each outer physical layer). For a droplet/micelle/vesicle centred at the lower bound whose far side reaches a bulk plateau this is the Laplace pressure: Δp = 2γ/R<sub>s</sub> (sphere) or γ/R<sub>s</sub> (cylinder) at the surface of tension R<sub>s</sub>, 0 across a flat interface, and 0 at the pressure-balanced (tensionless) point that the `Laplace_pressure` search drives to. It is NOT a pressure difference when either end layer is not a bulk plateau (a wall, a brush, a box too small for the far field). **Deliberate deviation from Namics** (7 Oct 2026): Namics prints −ω(first) only, which equals Δp only when the far side sits at ω = 0 (a reservoir-terminated box: free molecules set the far field — every regression with this column is of this kind and printed unchanged). With restricted phase formers the implied bulk can land on a phase or an absent state, the far plateau carries ω ≠ 0, and the one-sided value is no pressure difference (a flat two-phase box: one-sided −0.0396, two-sided 3e-11). PySFBox prints a one-time note giving both values whenever the magnitude of ω(last) exceeds max(1e-7, 1e-4 × the magnitude of Δp), i.e. whenever the column differs visibly from Namics'. Same quantity as the `Laplace_pressure` search target |
+| `sys` | `electrode_charge` | real | σ, the charge the fixed-potential electrode(s) (`e.psi0/kT`) took up from their battery, in elementary charges per site area, summed over the electrode sites like `grand_potential` (per unit area on the planar lattice). Sign: positive when the electrode took up positive charge (a positive ψ0 against a salt solution gives σ > 0); with the solution's charge it makes the box neutral (the post-solve electroneutrality audit checks exactly that sum). The σ of the work term −½ σ ψ0 in Ω and F. Use this column for the electrode charge and the differential capacitance dσ/dψ0: `dΩ/dψ0 = −σ` holds only when every molecule is free (see `e.psi0/kT`). NiN with a note when the system has no electrode. PySFBox extension (no Namics counterpart) |
+| `sys` | `Laplace_pressure` | real | the pressure difference across the system, Δp = p<sub>in</sub> − p<sub>out</sub> = −ω(first interior layer) + ω(last interior layer), with ω(z) the grand-potential density (`pro : sys : X : grand_potential_density`, a local −pressure; 1-gradient; at fjc > 1 the first refined site of each outer physical layer). For a droplet/micelle/vesicle centred at the lower bound whose far side reaches a bulk plateau this is the Laplace pressure: Δp = 2γ/R<sub>s</sub> (sphere) or γ/R<sub>s</sub> (cylinder) at the surface of tension R<sub>s</sub>, 0 across a flat interface, and 0 at the pressure-balanced (tensionless) point that the `Laplace_pressure` search drives to. It is NOT a pressure difference when either end layer is not a bulk plateau (a wall, a brush, a box too small for the far field). A **frozen end layer** (a droplet nucleated on a frozen core, a particle-seeded Ω(R) ladder, a frozen wall block at either end) has ω = 0 by construction, so it is not read itself (28 Oct 2026; before, every cored droplet printed ~1e-16): past the frozen block (and its fjc + 1 contact sites) ω is read at the most stationary site before the first interface, accepted when its local variation, the magnitude of ω(i+1) − ω(i−1), is at most 10 % of the magnitude of ω(i) (+ 1e-6 of the largest ω magnitude); when every density there is within 1e-2 of its far-end value (one phase from the core outward, no droplet) at the far-end site, so Δp = 0; a one-time note names the site, its ω and its local variation, and Δp is only as good as that plateau. **No plateau** (a thin shell or a film around the core): NiN with a note. Namics reads the frozen layer itself and prints 0 there. **Deliberate deviation from Namics** (7 Oct 2026): Namics prints −ω(first) only, which equals Δp only when the far side sits at ω = 0 (a reservoir-terminated box: free molecules set the far field — every regression with this column is of this kind and printed unchanged). With restricted phase formers the implied bulk can land on a phase or an absent state, the far plateau carries ω ≠ 0, and the one-sided value is no pressure difference (a flat two-phase box: one-sided −0.0396, two-sided 3e-11). PySFBox prints a one-time note giving both values whenever the magnitude of ω(last) exceeds max(1e-7, 1e-4 × the magnitude of Δp), i.e. whenever the column differs visibly from Namics'. Same quantity as the `Laplace_pressure` search target |
 | `sys` | `phi_ratio` | real | the delta-constraint target ratio r (constraint runs only) |
 | `sys` | `free_energy`, `free_energy(po)` | real | Helmholtz free energy F (both spellings map to F; `(po)` is Namics' Ω + Σnμ route to the same value) |
 | `sys` | `iterations` | int | solver iteration count (solver-dependent; ignored in regression diffs) |
@@ -1250,22 +1338,22 @@ Types: `int` → `%d`, `real` → `%.16e`, `string` → printed bare (like Namic
 | `mol` | `theta` | real | total amount Σ L·φ of the molecule |
 | `mol` | `theta_exc` | real | excess amount θ − (Σ L)·φ_bulk |
 | `mol` | `phibulk` | real | bulk volume fraction |
-| `mol` | `Mu`, `MU`, `mu` | real | chemical potential μ |
+| `mol` | `Mu`, `MU`, `mu` | real | chemical potential μ. An ABSENT molecule (free with `phibulk : 0`, restricted with θ = 0) prints `-inf` (ln 0), as in Namics; a present molecule whose ln G_N is not finite prints NiN with a note. The characteristic function `sys : X` skips an absent molecule's n·μ term (it is 0), and a `mu` search target refuses a probe on an absent molecule |
 | `mol` | `mu-<state>` | real | per-state μ = μ + ln(α_bulk,state), for chain-length-1 molecules only |
 | `mol` | `n` | real | number of molecules θ/N |
 | `mol` | `N`, `chainlength` | int | chain length (segments) |
 | `mol` | `GN` | real | single-chain partition function G_N (exact up to the double range; `inf` with a warning beyond it — μ and θ use ln G_N and stay exact) |
-| `mol` | `phiMax` | real | max φ over interior layers |
-| `mol` | `phiMin` | real | min φ over interior layers |
+| `mol` | `phiMax` | real | max φ over the free interior sites (frozen sites excluded) |
+| `mol` | `phiMin` | real | min φ over the free interior sites (frozen sites excluded: a wall frozen on layer 1 no longer prints 0) |
 | `mol` | `phiM` | real | φ at the last interior layer (the bulk/reservoir side) — the Namics `phiM`, **not** the maximum |
 | `mon` | `theta` | real | total amount of this monomer |
 | `mon` | `theta_exc` | real | excess amount θ − (Σ L)·φ_bulk |
 | `mon` | `phibulk` | real | bulk volume fraction of the monomer |
 | `mon` | `chi_<X>`, `chi-<X>` | real | Flory χ between this monomer and monomer `X` |
-| `mon` | `1st_M_phi_z` | real | first moment ⟨z⟩ of the excess profile (M₁/θ_exc) |
-| `mon` | `2nd_M_phi_z` | real | second moment M₂/θ_exc |
+| `mon` | `1st_M_phi_z` | real | first moment ⟨z⟩ of the excess profile over the free sites (M₁/Γ, Γ the free-site excess; see moments below) |
+| `mon` | `2nd_M_phi_z` | real | second moment M₂/Γ over the free sites |
 | `mon` | `RMS` | real | √(second moment); `nan` when the second moment is negative (as Namics) |
-| `mon` | `fluctuations` | real | √(M₂/θ_exc − ⟨z⟩²) |
+| `mon` | `fluctuations` | real | √(M₂/Γ − ⟨z⟩²); `nan` when that variance is negative beyond round-off (a sign-changing excess; Namics prints 0) |
 | `mon` | `alphabulk_<state>` | real | per-state bulk fraction, pushed on the parent monomer |
 | `mon` | `valence_<state>` | real | per-state valence |
 | `mon` | `phibulk_<state>` | real | per-state bulk volume fraction |
@@ -1333,10 +1421,24 @@ written column sums to F/Ω.
   the lattice Poisson solve; ≈ 0 over neutral regions.
 - **q** — the local charge density feeding the Poisson equation.
 - **moments** (`1st_M_phi_z`, `2nd_M_phi_z`, `RMS`, `fluctuations`) — moments
-  of the *excess* profile measured from the first layer, normalised by
-  θ_exc: `1st_M_phi_z` is the mean position ⟨z⟩ (brush/layer height proxy),
-  `2nd_M_phi_z` the mean-square position, `RMS = √M₂`, and `fluctuations` the
-  standard deviation √(⟨z²⟩ − ⟨z⟩²) (layer width). When θ_exc is round-off
+  of the *excess* profile measured from the box edge (the `.pro` x
+  coordinate), summed over the FREE sites only and normalised by the
+  free-site excess Γ = Σ<sub>free</sub> (φ − φ_bulk) L: `1st_M_phi_z` is the
+  mean position ⟨z⟩ (brush/layer height proxy), `2nd_M_phi_z` the
+  mean-square position, `RMS = √M₂`, and `fluctuations` the standard
+  deviation √(⟨z²⟩ − ⟨z⟩²) (layer width). A frozen interior site (a wall
+  `frozen_range : 1;1`, a frozen core) holds no mobile density and is left
+  out, so the same adsorbed layer gives the same width with the wall in the
+  ghost layer or frozen on layer 1, and ⟨z⟩ moves by exactly one layer per
+  frozen layer (the origin stays the box edge). Without interior frozen
+  sites Γ = θ_exc and nothing changes. This *intentionally deviates* from
+  Namics, which sums every site and divides by θ_exc (a frozen site enters
+  as −φ_bulk of depleted volume: on a wall frozen on layer 1 its width read
+  0.84 for a layer of width 1.87, and 0 one frozen layer further; changed
+  28 Oct 2026); `theta_exc` itself keeps the box convention.
+  `fluctuations` prints `nan` when the variance is negative beyond
+  round-off (a sign-changing excess; Namics prints 0, a plausible-looking
+  width), as `RMS` does for M₂ < 0. When Γ is round-off
   (relative 1e-10, e.g. a uniform state) all four print `nan` instead of a
   meaningless 0/0 ratio (Namics prints the ratio). All four are in bond-length
   units and independent of lattice refinement (`FJC_choices`) — fixed
@@ -1412,14 +1514,25 @@ var : mol-poly : end_value : 100
 | param | values | default | meaning |
 |---|---|---|---|
 | `scan` | a parameter name | — (required) | marks the block a scan; value = the parameter to sweep (`theta`, `phibulk`, `n`, `n_layers`, `chi_X`, `alphabulk`, …, or `NAME-value` for an alias) |
-| `step` | real (may be negative) | `1` | linear increment per step. An `n_layers` step must be a whole number of layers: a fractional step raises before the scan starts (it used to solve the truncated box and label the row with it). |
+| `step` | real (may be negative) | `1` | linear increment per step. An `n_layers` (or `n_layers_x/y/z`) step must be a whole number of layers: a fractional step raises before the scan starts (it used to solve the truncated box and label the row with it). An alias or exponential scan that drives a layer count is checked rung by rung before step 0 as well. A scan of a layer key the lattice does not read (`n_layers` on `gradients : 2/3`, `n_layers_x` on `gradients : 1`) raises. |
 | `end_value` | real | — (required) | last value of the sweep |
 | `scale` | `linear` / `exponential` | `linear` | `linear` = constant step; `exponential` = log-spaced (see below) |
 | `steps` | int | `1` | **exponential only**: number of steps per decade |
 
 - **Linear** produces `round((end − start)/step) + 1` values (both ends
   included). If `step` has the wrong sign for the direction, the count collapses
-  to a single step at the start value.
+  to a single step at the start value. A value within 1e-9·step of `end_value`
+  is set to `end_value` exactly (0.15 by −0.05 ends at 0, not −2.8e-17).
+- **Amount domains** _(since 28 Oct 2026)_: before the first row, every
+  planned value of a scanned free `phibulk` (domain [0, 1]), restricted
+  `theta`/`n` (≥ 0) or state `alphabulk` ((0, 1)) is checked, and a value
+  outside its domain raises naming the step and the value. When `step` does not
+  divide `end_value − start`, the rounded count above can add a row past
+  `end_value` (0.01 by −0.0035 to 0 plans 0.01, 0.0065, 0.003, −0.0005); out
+  of the domain that row is refused with a dividing step suggested, where it
+  used to be written as a converged row of no physical state. The same values
+  raise at build time in a plain input (`mol pol: phibulk -0.01 is out of
+  range 0 .. 1`), as in Namics.
 - **Exponential** (`scale : exponential`) interpolates in `log10`; `steps` is the
   number of steps **per decade**, so it takes as many steps from 10→100 as from
   100→1000. Both start and `end_value` must be positive (else it raises). This is
@@ -1430,7 +1543,8 @@ var : mol-poly : end_value : 100
   `.pro` files are numbered by step index, not renamed).
 - Any settings key/name can be scanned (`set_value` writes it back before each
   rebuild). Each scan step is **warm-started** from the previous converged
-  solution; `n_layers` scans additionally remap the potential onto the new grid.
+  solution; `n_layers` scans additionally remap the potential onto the new grid
+  (per axis on 2-D/3-D lattices).
   One `.kal` row is written per step; `.pro` files are numbered like Namics.
 
 ### Scanning an alias
@@ -1489,7 +1603,7 @@ changes; saves 3–6 full solves per sweep step).
 |---|---|---|
 | `sys` | `grand_potential` | drive Ω to the value |
 | `sys` | `free_energy` | drive F to the value |
-| `sys` | `Laplace_pressure` | drive the inside/outside pressure difference −ω(first interior) + ω(last interior) — the kal `Laplace_pressure` column — to the value (1-gradient; typically 0, the pressure-balanced state of a delta-constraint-pinned droplet/membrane that removes the ΔP·V ~ R³ term from Ω(R) before a Helfrich fit) |
+| `sys` | `Laplace_pressure` | drive the inside/outside pressure difference −ω(first interior) + ω(last interior) — the kal `Laplace_pressure` column — to the value (1-gradient; typically 0, the pressure-balanced state of a delta-constraint-pinned droplet/membrane that removes the ΔP·V ~ R³ term from Ω(R) before a Helfrich fit). With a frozen core or wall block at an end the column's plateau rule applies: a probe with no plateau past the core RAISES ('Laplace_pressure undefined') instead of reading the frozen layer's ω = 0, which used to accept the first probe as the root. Regression `tests/laplace_core.in` |
 | `mol` | `mu` | drive chemical potential to a **numeric** value |
 | `mol` | `theta` / `n` / `phibulk` | drive that molecule quantity to the value |
 
@@ -1514,7 +1628,7 @@ equilibration) or the equate-to-solvent / balance-membrane searches. A
 
 | param | default | meaning |
 |---|---|---|
-| `super_tolerance` | `10 × tolerance` | target-error tolerance (don't set it below the target observable's noise floor at the inner tolerance — for `Laplace_pressure` at inner 1e-7 that is ~1e-5). A bracket that collapses to round-off width with the error still above `super_tolerance` RAISES (7 Oct 2026; it used to return that point as the root): noise-limited (the error shrank by orders) → the message gives the value to set; a JUMP in the target across the point (a branch switch, spinodal, evaporation) → the message names the discontinuity and does NOT suggest loosening the tolerance |
+| `super_tolerance` | `10 × tolerance` | target-error tolerance (don't set it below the target observable's noise floor at the inner tolerance — for `Laplace_pressure` at inner 1e-7 that is ~1e-5). A bracket that collapses to round-off width with the error still above `super_tolerance` RAISES (7 Oct 2026; it used to return that point as the root). The diagnosis reads the readouts clustered at the collapse point (within 1e-9 relative), never the distance from the start (28 Oct 2026): noise-limited (the readouts scatter by their own size) → the message gives the value to set, 3 × their RMS; a JUMP in the target across the point (repeated readouts on each side agree, with opposite signs: a branch switch, spinodal, evaporation) → the message names the discontinuity and does NOT suggest loosening the tolerance; too few readouts to tell → it says so and suggests a tighter inner `tolerance` (noise shrinks with it, a jump does not) |
 | `super_deltamax` | `0.5` | the bracket probes the search variable by a factor **1 + super_deltamax**. The 0.5 default suits spherical θ~R³ searches (a probe moves R only ~14%); when θ translates a delta-pinned **flat** interface directly, use ~`0.01` — a ×1.5 probe rams 50% more material against the pinned wall and the inner SCF cannot follow |
 | `super_iterationlimit` | `max(iterationlimit // 10, 30)` | max super-iterations (each = one full SCF) |
 
@@ -1529,7 +1643,8 @@ non-monotone/unreachable target, raises with actionable advice.
 
 Ranges pin a `mon`'s segments to lattice sites; a segment with
 `freedom : frozen` or `freedom : pinned` **requires** a range (else it raises).
-Give it with `mon : X : frozen_range : ...` or `mon : X : pinned_range : ...`
+Give it with the keyword that matches the freedom: `mon : X : frozen_range :
+...` for a frozen mon, `mon : X : pinned_range : ...` for a pinned one
 (cross-ref `mon`).
 
 **1-gradient** tokens (`model.py:_set_range`; coordinates are 1-based *physical*
@@ -1559,9 +1674,17 @@ geometries the N-D lattice supports — cross-ref `lat`/`mon`):
 
 - `lowerbound` / `upperbound` — a wall on the first axis' low/high face (needs
   the `surface` bound on that face).
+- `lowerbound_x|y|z` / `upperbound_x|y|z` — a wall on that axis' low/high face
+  (needs the `surface` bound on that face; an axis the lattice lacks raises).
 - `xlo,ylo[,zlo];xhi,yhi[,zhi]` — an inclusive box in 1-based per-axis interior
   coordinates. Each corner must supply `gradients` coordinates (else it raises);
-  omitting the second corner (`;xhi,…`) selects a single layer.
+  omitting the second corner (`;xhi,…`) selects a single layer. A coordinate
+  may be a number `0..n+1` or one of Namics' per-axis tokens `firstlayer` (1),
+  `lastlayer` (n), `lowerbound` (0), `upperbound` (n + 1).
+- The coordinates `0` and `n+1` are the ghost layers: a box there is a wall in
+  that ghost layer (`1,lowerbound;nx,lowerbound` = `1,0;nx,0` = `lowerbound_y`)
+  only if it covers the full face; a partial ghost patch, a ghost + interior
+  span and ghost coordinates on two axes raise.
 - A one-layer-thick box that spans a **full** boundary face is treated as a wall
   face (it fills the ghost hyperplane); a **partial** patch stays an interior
   mask (it will *not* fake solid contact along the whole boundary).
@@ -1573,9 +1696,17 @@ alias : N : value : 100
 ```
 
 defines the substitution `#N#`. `substitute_aliases` replaces every `#N#`
-occurrence in **composition strings** (`mol : X : composition`) and in the
-lattice **`n_layers`** fields (`n_layers`, `n_layers_x/y/z`) before parsing, so
-one alias can size the box and the chain at once:
+occurrence before the field is parsed, in exactly these fields:
+
+- **substituted:** composition strings (`mol : X : composition`); the lattice
+  layer counts `n_layers`, `n_layers_x/y/z`; every `sys` value; every `newton`
+  value (`sys`/`newton` since 28 Oct 2026);
+- **not substituted:** the other `lat` keys (`offset_first_layer`, `lambda`,
+  bounds, …), the other `mon` and `mol` values, `state`, `reaction`, `var` and
+  the output blocks. A `#X#` in a numeric field there raises as an unparseable
+  number.
+
+One alias can size the box and the chain at once:
 
 ```
 alias : N : value : 100

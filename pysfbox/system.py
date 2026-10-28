@@ -54,6 +54,20 @@ class MassAccountingError(InputAuditError):
     integrate to its amount (theta, or a segment type's share of it)."""
 
 
+class NegativeDensityError(InputAuditError):
+    """The audit's positivity check: a molecule's converged density is
+    negative on a free site -- the site average was not a probability
+    average there (the refined cylinder's axis row at offset 0, the one
+    non-stochastic stencil Lattice1D accepts)."""
+
+
+# a molecule's phi below -PHI_NEGATIVE_RTOL times its own maximum on the
+# free sites is refused (System._audit_positivity); propagators of
+# non-negative weights through a non-negative stencil are >= 0 exactly, so
+# anything beyond rounding means a negative transition weight
+PHI_NEGATIVE_RTOL = 1e-12
+
+
 def fd_jacobian(residual, x, g=None):
     """Forward-difference Jacobian J[i, j] = d g_i / d x_j of a residual
     function, one residual evaluation per column.  The step per column is
@@ -72,7 +86,11 @@ def fd_jacobian(residual, x, g=None):
     return J
 
 
-# warnings already printed this process (avoid per-scan-step spam)
+# warnings and notes already printed for this INPUT FILE (avoid per-scan-
+# step spam -- a var scan builds a System and writes a kal row per step).
+# runner._reset_file_notes clears it at the start of every file, so a
+# note that qualifies a printed number reaches every file of a multi-file
+# run (`pysfbox a.in b.in`, notebook loops)
 _WARN_NOTES = set()
 
 
@@ -82,14 +100,30 @@ def _layer_count(text, key):
     used to give 28, and a sub-layer scan step (`step : -0.5`) solved the
     9.5-layer rung as the 9-layer box and labelled it 9."""
     if text is None:
-        raise ValueError(f"lat : {key} is required")
+        raise ValueError(
+            f"lat : {key} is required"
+            + (" (a 1-gradient lattice; gradients : 2/3 read n_layers_x/y/z)"
+               if key == "n_layers" else ""))
     v = float(text)
     if v != int(v) or v < 1:
         raise ValueError(
-            f"lat : {key} : {text} must be a positive integer (sub-layer "
-            "box sizes on refined lattices are a pysfbox-dev extension; "
-            "this release steps whole layers)")
+            f"lat : {key} : {text} must be a positive integer"
+            + (" (sub-layer box sizes on refined lattices are a pysfbox-dev "
+               "extension; this release steps whole layers)"
+               if key == "n_layers" else
+               " (an N-D box size is a whole number of layers)"))
     return int(v)
+
+
+def _sys_last(settings, param, default=None):
+    """The last value of a `sys` parameter over every sys block, with `#X#`
+    aliases substituted (review 27 Oct 2026, #57: sys values were a block
+    the aliases did not reach)."""
+    v = default
+    for _, params in get_blocks(settings, "sys"):
+        v = last(params, param, v)
+    return substitute_aliases(v, settings) if isinstance(v, str) else v
+
 
 # physical constants for electrostatics, copied VERBATIM from Namics
 # (namics.cpp:45-49) so converged charged states agree with the oracle
@@ -300,6 +334,30 @@ class System:
                 f"lat : {wrong[0]} does not apply with gradients : "
                 f"{gradients} (1 gradient: lowerbound/upperbound; 2 or 3: "
                 "lowerbound_x, upperbound_y, ...)")
+        # the same for the layer counts: a stray key was dropped silently,
+        # and a var scan of it wrote a table of identical rows under
+        # changing labels (review 27 Oct 2026, #7). Stricter than Namics,
+        # which accepts a static stray key (it does refuse the scan,
+        # lattice.cpp:608-622)
+        counts = (["n_layers"] if gradients == 1 else
+                  ["n_layers_x", "n_layers_y"]
+                  + (["n_layers_z"] if gradients == 3 else []))
+        wrong = [k for k in lp if re.fullmatch(r"n_layers(_[xyz])?", k)
+                 and k not in counts]
+        if wrong:
+            raise ValueError(
+                f"lat : {wrong[0]} does not apply with gradients : "
+                f"{gradients}: the box size is read from "
+                f"{' / '.join(counts)} only; drop the line (it would be "
+                "ignored, and a var scan of it would vary nothing)")
+        if gradients == 1:
+            wrong = [k for k in lp if k in ("theta_range", "phi_range")]
+            if wrong:
+                raise ValueError(
+                    f"lat : {wrong[0]} does not apply with gradients : 1 "
+                    "(angular ranges belong to polar/spherical N-D "
+                    "lattices, which PySFBox does not support); drop the "
+                    "line")
         if last(lp, "lambda") is not None and (
                 gradients > 1 or int(float(last(lp, "FJC_choices", 3))) > 3):
             # only the fjc = 1 three-point stencil has a lambda to override;
@@ -329,7 +387,7 @@ class System:
                         "1/(6 fjc^2) b^2); omit the line, or write hexagonal "
                         "for inputs that must also run on Namics")
                 self.warnings.append(note)
-                if note not in _WARN_NOTES:     # once per process
+                if note not in _WARN_NOTES:     # once per input file
                     _WARN_NOTES.add(note)
                     print(f"  warning: {note}")
             self.lat = Lattice1D(
@@ -400,7 +458,7 @@ class System:
                             "once states exist (states carry the charge, "
                             "as in Namics)")
                     self.warnings.append(note)
-                    if note not in _WARN_NOTES:     # once per process
+                    if note not in _WARN_NOTES:     # once per input file
                         _WARN_NOTES.add(note)
                         print(f"  warning: {note}")
                     seg.valence = 0.0
@@ -421,7 +479,14 @@ class System:
         # ---- molecules ---------------------------------------------------
         self.molecules = {}
         for name, params in get_blocks(settings, "mol"):
-            comp = substitute_aliases(last(params, "composition"), settings)
+            raw = last(params, "composition")
+            if raw is None:
+                # used to be a bare TypeError from substitute_aliases
+                # (review 27 Oct 2026, #56)
+                raise ValueError(
+                    f"mol {name}: composition is required, e.g. 'mol : "
+                    f"{name} : composition : (A)100'")
+            comp = substitute_aliases(raw, settings)
             self.molecules[name] = Molecule(name, params, self.segments,
                                             lat, comp)
         if not self.molecules:
@@ -569,6 +634,19 @@ class System:
                         "fixed surface potential (e.psi0/kT) on a curved "
                         "lattice is not supported yet (the curved electrode "
                         "condition is not yet ported to PySFBox)")
+            # a planar electrode on a refined lattice: the closed-form
+            # anchor in _psi_residual assumes ONE site per layer, so a
+            # refined `1;1` electrode (sites fjc..2fjc-1) was refused at the
+            # first residual as an 'interior' electrode. The physics is
+            # well posed; the anchor is not ported yet -- refuse at setup
+            # with the way out.
+            if self.fixedPsi0 and lat.fjc > 1:
+                raise NotImplementedError(
+                    "fixed surface potential (e.psi0/kT) on a refined "
+                    f"lattice (FJC_choices {lat.FJC} > 3) is not ported yet: "
+                    "the electrode anchor assumes one site per layer. Use "
+                    "FJC_choices : 3, or a fixed-charge wall (valence) on "
+                    "the refined lattice")
             # diagnostic hazard (oracle-tested 21 Jul 2026): for epsilon
             # outside 1..250 the compiled Namics PRINTS "Default value 80
             # used instead" but does NOT substitute -- it runs with the
@@ -586,7 +664,7 @@ class System:
                             "message (it only prints, never substitutes; "
                             "oracle-verified)")
                     self.warnings.append(note)
-                    if note not in _WARN_NOTES:     # once per process
+                    if note not in _WARN_NOTES:     # once per input file
                         _WARN_NOTES.add(note)
                         print(f"  warning: {note}")
             self.psiMask = np.zeros(lat.M, dtype=bool)
@@ -659,10 +737,7 @@ class System:
         # example nucleation_barrier.in) fixes a free molecule's phibulk
         # and walks delta_range to map Omega(R) away from equilibrium.
         def sys_last(param, default=None):
-            v = default
-            for _, params in get_blocks(settings, "sys"):
-                v = last(params, param, v)
-            return v
+            return _sys_last(settings, param, default)
 
         constraint = sys_last("constraint")
         self.constraintfields = constraint is not None
@@ -736,7 +811,9 @@ class System:
                 # the FH critical composition of an A/B pair: phi_A/phi_B =
                 # sqrt(N_B/N_A) (f''' = 0). Namics (system.cpp:899-901) uses
                 # sqrt(N_A/N_B) -- the inverse; deliberate deviation (review
-                # 6 Oct 2026, #74)
+                # 6 Oct 2026, #74). Do NOT revert in a Namics re-sync:
+                # tests/delta_critical_ratio.in guards it (the inverse flips
+                # the sign of the pinned phi_A - phi_B)
                 molA, molB = self.delta_molecules
                 self.phi_ratio = float(np.sqrt(molB.N / molA.N))
             else:
@@ -980,7 +1057,7 @@ class System:
                     "through its states (as in Namics) -- give the chi per "
                     "state instead")
             self.warnings.append(note)
-            if note not in _WARN_NOTES:            # once per process
+            if note not in _WARN_NOTES:            # once per input file
                 _WARN_NOTES.add(note)
                 print(f"  warning: {note}")
 
@@ -1383,8 +1460,10 @@ class System:
                     all(i in (1, lat.M - 2) for i in el)):
                 raise NotImplementedError(
                     "fixed surface potentials are supported on single "
-                    "boundary-adjacent layers only (as in the Namics "
-                    "examples); interior electrodes are not yet ported to PySFBox")
+                    "boundary-adjacent layers only (frozen_range 1;1 or "
+                    "n;n, as in the Namics examples); multi-layer or "
+                    "interior electrode blocks are not yet ported to "
+                    "PySFBox")
             x_target = np.zeros(lat.M)
             # the charge the electrode takes up from its reservoir (the
             # battery), per site in the units of q: Gauss's law at the
@@ -1436,11 +1515,93 @@ class System:
         formers the implied bulk can land on a phase or an absent state,
         omega(last) != 0, and the one-sided column is no pressure
         difference at all. At a droplet's surface of tension R_s,
-        Delta p = 2 gamma/R_s (sphere), gamma/R_s (cylinder), 0 (flat)."""
-        lat = self.lat
+        Delta p = 2 gamma/R_s (sphere), gamma/R_s (cylinder), 0 (flat).
+
+        A FROZEN end layer (a core the droplet sits on, a frozen wall
+        block) has omega = 0 by construction, which made a cored droplet
+        print dp ~ 1e-16 and a Laplace_pressure : 0 search accept its
+        first probe (28 Oct 2026): that end is read at the bulk plateau
+        past the frozen block instead (`_laplace_sites`), and dp is NaN
+        when there is none. Free end layers are read exactly as before
+        (bit-identical)."""
         gpd = self.grand_potential_density()
-        w_last = float(gpd[lat.M - 2 * lat.fjc])
-        return float(-gpd[lat.fjc]) + w_last, w_last
+        i_in, i_out = self._laplace_sites(gpd)
+        if i_out is None:
+            return float("nan"), float("nan")
+        w_last = float(gpd[i_out])
+        if i_in is None:
+            return float("nan"), w_last
+        return float(-gpd[i_in]) + w_last, w_last
+
+    def _laplace_sites(self, gpd):
+        """(i_in, i_out): the sites laplace_pressure reads omega at. A
+        free end layer is read itself (site fjc, site M - 2 fjc); a
+        frozen one at the plateau past the frozen block
+        (`_core_plateau_site`), None when there is no plateau."""
+        lat = self.lat
+        free = np.where(lat.interior & (self.ksam > 0))[0]
+        sites = []
+        for i_end, order in ((lat.fjc, free), (lat.M - 2 * lat.fjc,
+                                               free[::-1])):
+            sites.append(i_end if self.ksam[i_end] > 0
+                         else self._core_plateau_site(gpd, order))
+        return sites[0], sites[1]
+
+    def _core_plateau_site(self, gpd, sites):
+        """Bulk-plateau site next to a frozen block, for the Laplace
+        pressure. `sites` are the free sites ordered from the frozen
+        block outward. The first fjc + 1 of them carry the contact chi
+        term (the site average reaches fjc sites, plus one for margin)
+        and are skipped. Then:
+        - every density within 1e-2 of its far-end value past them: ONE
+          phase from the core to the far end (a contact tail at most, no
+          droplet): the most stationary omega site of the whole window,
+          unconditionally, so dp = 0 up to solver noise -- the reading
+          of the same state without a core (and the mid-slab plateau
+          between two frozen walls);
+        - else the window ends at the first interface, the half-height
+          crossing of the molecule whose density changes most between
+          the window start and the far end, and the site with the most
+          stationary omega, min |omega(i+1) - omega(i-1)|, is accepted
+          when that variation is at most 10 % of |omega(i)| plus 1e-6 of
+          the largest |omega| on the free sites -- an outer bulk sits at
+          omega ~ 0, where the relative test alone would reject solver
+          noise.
+        None: no plateau (a thin shell or film around the core)."""
+        skip = self.lat.fjc + 1
+        if len(sites) < skip + 3:
+            return None
+        win = sites[skip:]
+        dev, best = 0.0, None
+        for m in self.molecules.values():
+            d = float(np.abs(m.phi[win] - m.phi[win[-1]]).max())
+            if d > dev:
+                dev, best = d, m
+        one_phase = dev <= 1e-2
+        cand = win[:-1]               # both neighbours of a candidate exist
+        if not one_phase:
+            k = self._half_height_crossing(best.phi, win)
+            if k is not None:
+                cand = cand[:k]
+        if len(cand) == 0:
+            return None
+        var = np.abs(gpd[cand + 1] - gpd[cand - 1])
+        j = int(np.argmin(var))
+        i = int(cand[j])
+        scale = float(np.abs(gpd[sites]).max())
+        if not one_phase and var[j] > 0.1 * abs(gpd[i]) + 1e-6 * scale:
+            return None                   # layered, not a bulk plateau
+        return i
+
+    @staticmethod
+    def _half_height_crossing(phi, sites):
+        """Position (into `sites`, ordered outward) of the first site
+        where phi has crossed half-way from phi[sites[0]] to
+        phi[sites[-1]]; None when it never does."""
+        half = 0.5 * (phi[sites[0]] + phi[sites[-1]])
+        side = np.sign(phi[sites[0]] - half)
+        beyond = np.where(np.sign(phi[sites] - half) != side)[0]
+        return int(beyond[0]) if beyond.size else None
 
     def grand_potential_density(self):
         """Per-layer grand-potential density: the integrand whose lattice
@@ -1512,8 +1673,12 @@ class System:
             # boundary term +q_el*psi0/2 (the fixed-charge booking of that
             # charge); the constant-potential grand potential subtracts
             # the reservoir work q_el*psi0: net -q_el*psi0/2 at the
-            # electrode site. Then dOmega/dpsi0 = -sigma (Lippmann). Absent
-            # in Namics GetGrandPotential (review finding 3, 7 Oct 2026).
+            # electrode site. Then dOmega/dpsi0 = -sigma (Lippmann) when
+            # every molecule is free; in general dOmega/dpsi0 = -sigma -
+            # sum_i n_i dmu_i/dpsi0 (restricted molecules' mu move with
+            # psi0; REFERENCE.md e.psi0/kT, review #43). sigma itself is
+            # kal sys : electrode_charge. Absent in Namics
+            # GetGrandPotential (review finding 3, 7 Oct 2026).
             omega -= 0.5 * self.q_electrode * self.psi
             return omega
         omega *= self.ksam
@@ -1650,11 +1815,27 @@ class System:
         where f_ij is the fraction of molecule i made of segment type j, phibulk_j
         the bulk fraction of segment j, and the segment double-sum runs over all
         segment types (frozen surfaces drop out: their bulk fraction and molecule
-        fraction are both zero)."""
+        fraction are both zero).
+
+        An ABSENT molecule (free with phibulk 0, restricted with theta 0)
+        has mu = -inf (ln 0), printed '-inf' like Namics (oracle-verified;
+        the old 0.0 was indistinguishable from a genuine pure-component
+        mu = 0). A present molecule whose ln GN is not finite (a died or
+        unpropagated propagator) has no number: returns None, which the
+        kal lookup prints as NiN after a note (review 27 Oct 2026, #66)."""
         N = mol.N
         theta = mol.get_theta()
-        if theta <= 0 or not np.isfinite(mol.lnGN):
-            return 0.0
+        if theta <= 0:
+            return -np.inf
+        if not np.isfinite(mol.lnGN):
+            key = ("mu_lnGN", mol.name)
+            if key not in _WARN_NOTES:          # once per process
+                _WARN_NOTES.add(key)
+                print(f"  note: mol : {mol.name} : mu: ln GN is not finite "
+                      f"(theta {theta:.6g} > 0, so the molecule is present "
+                      "but its propagator did not give a finite weight) -> "
+                      "NiN")
+            return None
         mu = np.log(theta) - mol.lnGN + 1.0
         mu -= N * sum(m.phibulk / m.N for m in self.molecules.values())
         frac = {}
@@ -1709,6 +1890,10 @@ class System:
             return None, None
         for nm in self.X_mols:
             _t, n = self.get_value("mol", nm, "n")
+            if n == 0:
+                # an absent molecule: n mu = 0 (its mu is -inf, and
+                # 0 * -inf would be nan; review 27 Oct 2026, #66)
+                continue
             _t, mu = self.get_value("mol", nm, "mu")
             if n is None or mu is None:
                 return None, None
@@ -1716,16 +1901,25 @@ class System:
         for si, sj, host, n in self.X_states:
             st = next(st for sg in self.segments.values()
                       for st in sg.states if st.name == si)
+            count = n * self.lat.weighted_sum(st.phi)
+            if count == 0:
+                # no s_i units: the term is 0 whatever mu-<s_j> is (an
+                # absent host gives -inf; 0 * -inf = nan, review #66)
+                continue
             _t, mu = self.get_value("mol", host, "mu-" + sj)
             if mu is None:
                 return None, None
-            X -= n * self.lat.weighted_sum(st.phi) * mu
+            X -= count * mu
         return "real", float(X)
 
     # ---- output property lookup (kal) -----------------------------------------
     def get_value(self, key, name, prop):
-        """Returns ('int'|'real'|'string'|None, value). None -> NiN, like
-        Namics."""
+        """Returns ('int'|'real'|'string', value), or a NiN pair:
+        ('unknown', None) when key:name:prop matches nothing (the final
+        fall-through: write_kal prints the Namics 'unknown -> NiN'
+        warning), (None, None) when the property is RECOGNISED but has no
+        value for this state (a gate, usually after its own note; write_kal
+        prints a neutral line, never 'unknown')."""
         lat = self.lat
         if prop.endswith("-value"):
             alias = prop[:-6]
@@ -1771,6 +1965,20 @@ class System:
         if key == "sys":
             if prop == "grand_potential":
                 return "real", self.grand_potential()
+            if prop == "electrode_charge":
+                # PySFBox extension (review #43, Oct 2026): sigma, the
+                # charge the fixed-potential electrode(s) took up from
+                # their battery, summed like grand_potential (planar: per
+                # unit area, in elementary charges per site area) -- the
+                # q_electrode the work term -q_el*psi0/2 and the Gauss
+                # audit book. dOmega/dpsi0 = -sigma only when every
+                # molecule is free; read sigma here, not from a derivative
+                if not (self.charged and getattr(self, "fixedPsi0", False)):
+                    print("  note: sys : electrode_charge: no fixed-"
+                          "potential electrode (mon : X : e.psi0/kT) in this "
+                          "system -> NiN")
+                    return None, None
+                return "real", self.lat.weighted_sum(self.q_electrode)
             # Laplace pressure, TWO-SIDED: -omega(first) + omega(last)
             # (laplace_pressure(); the same quantity the Laplace_pressure
             # search drives). DELIBERATE deviation from Namics PushOutput,
@@ -1782,6 +1990,34 @@ class System:
             # grand_potential_density (21 Jul 2026).
             if prop == "Laplace_pressure" and self.lat.gradients == 1:
                 dp, w_last = self.laplace_pressure()
+                lat = self.lat
+                if self.ksam[lat.fjc] <= 0 or self.ksam[lat.M - 2
+                                                         * lat.fjc] <= 0:
+                    # a frozen end layer (28 Oct 2026): read at the bulk
+                    # plateau past it, NiN when there is none
+                    gpd = self.grand_potential_density()
+                    sites = self._laplace_sites(gpd)
+                    if not np.isfinite(dp):
+                        print("  note: sys : Laplace_pressure: an end layer "
+                              "is frozen (a core or wall block) and there "
+                              "is no bulk plateau past it (a thin shell or "
+                              "film around the core?): the pressure "
+                              "difference is undefined -> NiN")
+                        return None, None
+                    if "laplace_frozen_end" not in _WARN_NOTES:
+                        _WARN_NOTES.add("laplace_frozen_end")
+                        xs = ", ".join(
+                            f"x = {lat.offset + lat.z_phys[i - lat.fjc]:g}"
+                            f" (omega {gpd[i]:.6e}, local variation "
+                            f"{abs(gpd[i + 1] - gpd[i - 1]):.1e})"
+                            for i, e in zip(sites, (lat.fjc,
+                                                    lat.M - 2 * lat.fjc))
+                            if i != e)
+                        print(f"  note: sys : Laplace_pressure: an end "
+                              f"layer is frozen (a core or wall block), so "
+                              f"omega is read at the bulk plateau past it: "
+                              f"{xs}. Namics reads the frozen layer itself "
+                              f"(omega = 0 there). Note printed once")
                 if (abs(w_last) > max(1e-7, 1e-4 * abs(dp))
                         and "laplace_two_sided" not in _WARN_NOTES):
                     _WARN_NOTES.add("laplace_two_sided")
@@ -1790,7 +2026,8 @@ class System:
                           f"{w_last:.3e}); PySFBox prints the two-sided "
                           f"-omega(first) + omega(last) = {dp:.6e}, while "
                           f"Namics prints -omega(first) only "
-                          f"(= {dp - w_last:.6e} here). Note printed once")
+                          f"(= {dp - w_last:.6e} here). Note printed once "
+                          f"per input file")
                 return "real", dp
             if prop == "phi_ratio" and self.constraintfields:
                 return "real", self.phi_ratio
@@ -1842,9 +2079,12 @@ class System:
                 seg0 = m.seq[0]
                 for st in seg0.states:
                     if prop == f"mu-{st.name}":
-                        return "real", (self.chemical_potential(m)
-                                        + np.log(st.alphabulk))
+                        mu = self.chemical_potential(m)
+                        if mu is None:
+                            return None, None
+                        return "real", mu + np.log(st.alphabulk)
             theta = m.get_theta()
+            free_sites = self.lat.interior & (self.ksam > 0.5)
 
             def _gn():
                 # the propagators keep GN = exp(min(lnGN, 700)) (a display
@@ -1871,15 +2111,23 @@ class System:
                      "n": lambda: theta / m.N,
                      "N": lambda: m.N, "GN": _gn,
                      "chainlength": lambda: m.N,
-                     "phiMax": lambda: float(m.phi[self.lat.interior].max()),
+                     # extremes over the FREE sites: a frozen interior
+                     # site (phi = 0) is not part of the profile (review
+                     # 27 Oct 2026, #39; Namics takes every site)
+                     "phiMax": lambda: float(m.phi[free_sites].max()),
                      # Namics phiM = phitot[M-2*fjc]: phi at the last interior
                      # layer (the bulk/reservoir side), NOT the maximum.
                      "phiM": lambda: float(m.phi[self.lat.M - 2 * self.lat.fjc]
                                            if self.lat.gradients == 1
                                            else m.phi[self.lat.interior][-1]),
-                     "phiMin": lambda: float(m.phi[self.lat.interior].min())}
+                     "phiMin": lambda: float(m.phi[free_sites].min())}
             if prop in table:
                 v = table[prop]()
+                if v is None:
+                    # a recognised column without a value (mu of a present
+                    # molecule with a non-finite ln GN): NiN, its note
+                    # printed where it was decided
+                    return None, None
                 return ("int", v) if isinstance(v, int) else ("real", v)
         if key == "mon" and name in self.segments:
             s = self.segments[name]
@@ -1921,16 +2169,30 @@ class System:
             if prop == "phibulk":
                 return "real", phib
             if prop in ("1st_M_phi_z", "2nd_M_phi_z", "fluctuations", "RMS"):
-                # moments of the EXCESS profile, normalised by theta_exc.
-                # A uniform state has theta_exc = round-off and the ratio
-                # an O(box) number (Namics prints that garbage, dividing
+                # moments of the EXCESS profile over the FREE sites (ksam),
+                # normalised by that free-site excess Gamma. A frozen
+                # interior site (a frozen_range 1;1 wall, a frozen core)
+                # holds no mobile density; counting it as -phib of
+                # depleted volume, as Namics does (3e9eafd/7dfcb3c
+                # segment.cpp, unmasked Moment / theta - volume*phibulk),
+                # shifted <z> by the wall and could make the variance
+                # negative -- a deliberate deviation (review 27 Oct 2026,
+                # #39). The origin stays the box edge (the .pro x column);
+                # theta_exc keeps the box convention. Gamma = theta_exc
+                # minus the frozen sites' share, which is exactly 0.0 when
+                # no interior site is frozen (ghost walls: bit-identical).
+                gamma = theta_exc - lat.weighted_sum(
+                    (s.phi - phib) * (1.0 - self.ksam))
+                L_free = lat.L_sum - lat.weighted_sum(1.0 - self.ksam)
+                # A uniform state has Gamma = round-off and the ratio an
+                # O(box) number (Namics prints that garbage, dividing
                 # whenever theta_exc != 0 exactly); report nan instead
-                # when |theta_exc| is round-off relative to the amount.
+                # when |Gamma| is round-off relative to the amount.
                 # (review 7 Oct 2026, #62)
-                if abs(theta_exc) <= 1e-10 * max(theta, lat.L_sum * phib):
+                if abs(gamma) <= 1e-10 * max(theta, L_free * phib):
                     return "real", float("nan")
-                m1 = lat.moment(s.phi, phib, 1) / theta_exc
-                m2 = lat.moment(s.phi, phib, 2) / theta_exc
+                m1 = lat.moment(s.phi, phib, 1, weight=self.ksam) / gamma
+                m2 = lat.moment(s.phi, phib, 2, weight=self.ksam) / gamma
                 if prop == "1st_M_phi_z":
                     return "real", m1
                 if prop == "2nd_M_phi_z":
@@ -1939,9 +2201,17 @@ class System:
                     # M2 < 0 (an excess that changes sign): no real RMS;
                     # Namics' pow(M2, 0.5) prints nan here too
                     return "real", np.sqrt(m2) if m2 >= 0 else float("nan")
+                # a variance negative beyond round-off (a sign-changing
+                # excess) has no real width: nan, like RMS. Namics clamps
+                # it to 0, a plausible-looking width (review 27 Oct 2026,
+                # #74); round-off below zero still prints 0
                 fl = m2 - m1 * m1
-                return "real", np.sqrt(fl) if fl > 0 else 0.0
-        return None, None
+                if fl < -1e-12 * max(abs(m2), m1 * m1, 1.0):
+                    return "real", float("nan")
+                return "real", float(np.sqrt(max(fl, 0.0)))
+        # no match: the ONLY 'unknown' return (a gated, recognised column
+        # returns (None, None) above)
+        return "unknown", None
 
     def _full_potential(self, i):
         """The potential iteration species i actually feels, in kT: the
@@ -2054,9 +2324,7 @@ class System:
         for previous_result/none. The runner applies this to the FIRST
         calculation only, exactly like Namics (start == 1, then the type
         resets to previous_result)."""
-        kind = None
-        for _, params in get_blocks(self.settings, "sys"):
-            kind = last(params, "initial_guess", kind)
+        kind = _sys_last(self.settings, "initial_guess")
         if kind in (None, "previous_result", "none"):
             return None
         if kind not in ("polymer_adsorption", "membrane", "micelle"):
@@ -2292,9 +2560,14 @@ class System:
                         bound the free Poisson rows imply -- holds only if
                         the discrete Poisson stencil is flux-conservative
                         (telescoping faces), which the residual cannot see
+          positivity    every molecule's phi >= 0 on the free sites --
+                        automatic for a non-negative stencil; the refined
+                        cylinder's axis row at offset 0 (FJC_choices >= 11)
+                        is the one negative weight Lattice1D accepts
         """
         self._audit_amounts()
         self._audit_bulk()
+        self._audit_positivity()
         if g is not None:
             S, M = len(self.it_species), self.lat.M
             g = np.asarray(g, dtype=float)
@@ -2327,7 +2600,11 @@ class System:
                  "ONE propagator row (a long, strongly charged chain in a "
                  "large low-salt cell; extreme adsorption): its far tail "
                  "underflows. Try a smaller cell, more salt or a shorter "
-                 "chain; please report the input")
+                 "chain. A lattice stencil that breaks detailed balance "
+                 "loses mass the same way (a PySFBox defect: until 28 Oct "
+                 "2026 the refined curved lattice at offset 0 with "
+                 "FJC_choices 11, 19, 23, ...); please report the input "
+                 "either way")
         for m in self.molecules.values():
             if m.freedom != "restricted" or not m.theta > 0:
                 continue
@@ -2426,6 +2703,53 @@ class System:
                     "parameters than the ones this state used (a scan "
                     "step that changed a pK or alphabulk without "
                     "re-solving?). Please report the input")
+
+    def _audit_positivity(self):
+        """Every molecule's density is non-negative on the free sites (part
+        of _audit_solution). phi = sum Gf Gb / G1 over propagators of
+        non-negative Boltzmann weights, so a non-negative site average makes
+        it >= 0 exactly; Lattice1D._check_stencil guarantees that for every
+        lattice but one it accepts on purpose (decided 28 Oct 2026): the
+        refined CYLINDER at offset_first_layer 0 and FJC_choices >= 11,
+        whose axis row has a negative stay weight (lat.axis_stay; Namics
+        has the same rows). There a field that changes sharply next to the
+        axis can drive a propagator, and so phi, negative while the
+        residual converges -- this check makes that loud. NaN is left to
+        the incompressibility check."""
+        lat = self.lat
+        free = (np.asarray(self.ksam) > 0) & lat.interior
+        if not np.any(free):
+            return
+        for m in self.molecules.values():
+            ph = np.asarray(m.phi, dtype=float)[free]
+            top = float(np.max(np.abs(np.nan_to_num(ph))))
+            bad = ph < -PHI_NEGATIVE_RTOL * top
+            if not np.any(bad):
+                continue
+            j = int(np.argmin(np.where(bad, ph, np.inf)))
+            site = int(np.where(free)[0][j])
+            if getattr(lat, "axis_stay", None) is not None:
+                cause = (
+                    f"The lattice is the refined cylinder at "
+                    f"offset_first_layer 0 with FJC_choices {lat.FJC}: its "
+                    "axis row is not a probability average (stay weight "
+                    f"T00 = {lat.axis_stay:.4g}, the same rows as Namics), "
+                    "so a field that changes sharply next to the axis "
+                    "drives the propagators negative. Lower FJC_choices "
+                    "(9 or less keeps every weight >= 0) or set "
+                    "offset_first_layer > 0 (the inner mirror fold is "
+                    "non-negative)")
+            else:
+                cause = ("Every stencil PySFBox accepts has non-negative "
+                         "weights, so this is a PySFBox defect; please "
+                         "report the input")
+            self._audit_fail(
+                "non-negative density",
+                f"mol {m.name}: the converged density is {ph[j]:.6g} at "
+                f"free site {site} (flat index; its largest value is "
+                f"{top:.6g}). A negative density is no physical state, and "
+                "every observable of this state is meaningless. " + cause,
+                NegativeDensityError)
 
     def _audit_incompressibility(self, g_sp):
         """sum over molecules (+ frozen) of phi = 1 on every free site

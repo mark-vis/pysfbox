@@ -7,7 +7,8 @@ Namics input files consist of lines
 with `//` comments, blank lines, and the word `start` on its own line closing
 a calculation. Settings accumulate across `start` blocks (later blocks add to
 or override earlier ones), exactly as in Namics. `alias : X : value : v`
-defines `#X#` substitutions inside composition strings, and a `var` block
+defines `#X#` substitutions (composition strings, n_layers values, and the
+`sys` and `newton` values), and a `var` block
 defines a parameter scan within one calculation.
 
 Because output-specification lines may repeat a parameter with different
@@ -93,7 +94,11 @@ def set_value(settings, key, name, param, value):
 
 
 def substitute_aliases(text, settings):
-    """Replace #X# by the value of `alias : X : value`."""
+    """Replace #X# by the value of `alias : X : value`. A missing value
+    (None, `last()` of an absent key) passes through, so the caller's own
+    'is required' message is reached (review 27 Oct 2026, #56)."""
+    if text is None or "#" not in str(text):
+        return text
     for (key, name), params in settings.items():
         if key == "alias" and "value" in params:
             text = text.replace(f"#{name}#", str(params["value"][-1]))

@@ -1,0 +1,89 @@
+// FREE-SITE MOMENT COLUMNS (ref 28 Oct 2026, review 27 Oct #39 + #74;
+// ~0.3 s). One adsorbed (A)50 layer (hexagonal, chi_S -1, chi_W 0.4,
+// phibulk 0.01) in three equivalent layouts:
+//   start 1  the wall in the ghost layer (lowerbound surface), 40 layers;
+//   start 2  the wall frozen on layer 1 (frozen_range 1;1, mirror), 41;
+//   start 3  the wall frozen on layers 1-2 (frozen_range 1;2), 42.
+// The moment columns (1st_M_phi_z, 2nd_M_phi_z, RMS, fluctuations) and
+// mol phiMin/phiMax are taken over the FREE sites only, normalised by the
+// free-site excess Gamma, so all three rows describe the same layer:
+// Omega and fluctuations agree to the solver floor (1.8711354556 /
+// 1.8711354473, tolerance 1e-10), <z> moves by exactly one layer per
+// frozen layer (the origin stays the box edge = the .pro x column:
+// 2.28488 -> 3.28488 -> 4.28488, and <z^2> as <(z+k)^2>), and
+// phiMin(W) = 0.979495 in every row (not the 0 of the frozen site).
+// theta_exc keeps the box convention (the frozen sites count as depleted
+// volume: 0.03596 / 0.02596 / 0.01596).
+// INTENTIONALLY DEVIATES from Namics (3e9eafd and 7dfcb3c sum every site,
+// segment.cpp Moment / theta - volume*phibulk): oracle on starts 1-3 gives
+// 1st_M 2.28488 / 4.35778 / 8.40212 and fluctuations 1.87114 / 0.84321 /
+// 0.0 (start 1, the ghost wall, agrees with PySFBox to 2e-9); its phiMax
+// is a hill-climb value and it has no phiMin column (NiN).
+// Reported to the Namics authors.
+// Start 4 (A100, phibulk 0.1, chi_S -0.72): the excess changes sign
+// (theta_exc -0.0431, <z> 0.940, <z^2> 0.820), the variance
+// <z^2> - <z>^2 = -0.063 is negative beyond round-off and fluctuations
+// prints nan, like RMS where <z^2> < 0 (Namics prints 0.0). Start 5
+// (chi_S -1.2, a positive excess) stays finite: fluctuations 1.5236.
+// The moments are validated independently (direct sums over the free
+// sites of the solved profiles, the 2-D y-uniform twin on LatticeND, the
+// pre-fix positive control) in tests/observable_conventions.py.
+lat : NN : n_layers : 40
+lat : NN : geometry : planar
+lat : NN : lattice_type : hexagonal
+lat : NN : lowerbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : A : freedom : free
+mon : A : chi_S : -1
+mon : A : chi_W : 0.4
+mon : W : freedom : free
+
+mol : pol : composition : (A)50
+mol : pol : freedom : free
+mol : pol : phibulk : 0.01
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : NN : tolerance : 1e-10
+
+output : kal : append : false
+kal : lat : NN : n_layers
+kal : sys : NN : grand_potential
+kal : mon : A : theta_exc
+kal : mon : A : 1st_M_phi_z
+kal : mon : A : 2nd_M_phi_z
+kal : mon : A : RMS
+kal : mon : A : fluctuations
+kal : mol : W : phiMin
+kal : mol : W : phiMax
+kal : mol : pol : phiMin
+kal : mol : pol : phiMax
+
+start
+
+lat : NN : n_layers : 41
+lat : NN : lowerbound : mirror
+mon : S : frozen_range : 1;1
+
+start
+
+lat : NN : n_layers : 42
+mon : S : frozen_range : 1;2
+
+start
+
+lat : NN : n_layers : 40
+lat : NN : lowerbound : surface
+mon : S : frozen_range : lowerbound
+mon : A : chi_S : -0.72
+mol : pol : composition : (A)100
+mol : pol : phibulk : 0.1
+
+start
+
+mon : A : chi_S : -1.2
+
+start
