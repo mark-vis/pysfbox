@@ -17,7 +17,10 @@ freedom/amount, [61] unused state chi, [71] UTF-8 BOM, [84] mu : 0,
 characteristic-function parse errors and compute_kJ0 (9 Oct 2026);
 [27 Oct #9/#26/#41] curved offsets (a solid core thinner than 1/2 - 1/fjc,
 negative offsets) and the lambda range (28 Oct 2026); [L]
-Laplace_pressure around a frozen core with no bulk plateau (28 Oct 2026).
+Laplace_pressure around a frozen core with no bulk plateau (28 Oct 2026); [R27]
+the 27 Oct 2026 review: wrong-dimension layer keys and their scans (#7),
+the N-D box-size pre-flight (#42) and Namics' per-axis ghost coordinates
+in N-D ranges (#28).
 """
 import contextlib
 import io
@@ -467,6 +470,183 @@ for label, last in (("thin-shell kal Laplace_pressure is NiN", ""),
     else:
         check(label, err is None and len(rows) == 2
               and rows[1][1] == "NiN", f"{err!r} {rows}")
+
+print("[R27] review 27 Oct 2026: N-D guards and grammar")
+import numpy as np  # noqa: E402
+
+
+def run(text, name="r.in"):
+    """run_file on `text`; returns (kal rows as floats, .pro array|None).
+    Raises what run_file raises."""
+    p = write(text, name)
+    with contextlib.redirect_stdout(io.StringIO()):
+        runner.run_file(p, verbose=False)
+    rows = [[float(v) for v in ln.split()] for ln in
+            open(p[:-3] + ".kal").read().strip().split("\n")[1:]]
+    pro = (np.loadtxt(p[:-3] + ".pro", skiprows=1)
+           if os.path.exists(p[:-3] + ".pro") else None)
+    return rows, pro
+
+
+def run_raises(label, text, exc, words, name="r.in"):
+    """run_file must raise BEFORE any .kal data row is written."""
+    p = write(text, name)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            runner.run_file(p, verbose=False)
+    except exc as e:
+        kal = p[:-3] + ".kal"
+        rows = (open(kal).read().strip().split("\n")[1:]
+                if os.path.exists(kal) else [])
+        check(label, all(w in str(e) for w in words) and not rows,
+              f"{e} / {len(rows)} kal row(s)")
+        return
+    except Exception as e:                          # noqa: BLE001
+        check(label, False, f"{type(e).__name__}: {e}")
+        return
+    check(label, False, "ran without complaint")
+
+
+# a free (A)10 at an attractive wall, the x axis resolved, y columns
+POL = """
+mon : S : freedom : frozen
+mon : S : frozen_range : {rng}
+mon : A : freedom : free
+mon : A : chi_S : -1
+mon : W : freedom : free
+mol : pol : composition : (A)10
+mol : pol : freedom : free
+mol : pol : phibulk : 0.01
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+newton : NN : tolerance : 1e-11
+output : kal : append : false
+kal : mol : pol : theta
+kal : sys : NN : grand_potential
+"""
+PRO = "output : pro : append : false\npro : mon : A : phi\n"
+L2 = """
+lat : L : gradients : 2
+lat : L : geometry : flat
+lat : L : n_layers_x : {nx}
+lat : L : n_layers_y : {ny}
+"""
+
+
+def nd(nx=12, ny=3, rng="lowerbound", extra="lat : L : lowerbound_x : "
+       "surface\n"):
+    return L2.format(nx=nx, ny=ny) + extra + POL.format(rng=rng)
+
+
+print("[R27 #7] layer counts of the wrong dimensionality")
+raises("gradients 2 + a stray n_layers", nd() + "lat : L : n_layers : 12\n",
+       ValueError, ["n_layers", "n_layers_x / n_layers_y"])
+raises("gradients 2 + n_layers_z", nd() + "lat : L : n_layers_z : 7\n",
+       ValueError, ["n_layers_z"])
+raises("gradients 1 + n_layers_x", WALL + "lat : flat : n_layers_x : 12\n",
+       ValueError, ["n_layers_x", "read from n_layers only"])
+raises("gradients 1 + phi_range", WALL + "lat : flat : phi_range : 0;1\n",
+       ValueError, ["phi_range", "gradients : 1"])
+SCAN = ("var : lat-L : scan : n_layers\nvar : lat-L : step : -1\n"
+        "var : lat-L : end_value : 10\nstart\n")
+for lbl, extra in (("with", "lat : L : n_layers : 12\n"), ("without", "")):
+    run_raises(f"gradients 2 scan of n_layers ({lbl} a stray line) is "
+               "refused before row 0", nd() + extra + SCAN,
+               ValueError, ["n_layers_x / n_layers_y", "not read there"])
+rows, _ = run(nd() + "var : lat-L : scan : n_layers_x\nvar : lat-L : "
+              "step : -1\nvar : lat-L : end_value : 10\nstart\n")
+th = [r[0] for r in rows]
+check("2-D n_layers_x scan 12 -> 10: three distinct rows, "
+      "theta(12) - theta(10) = 2 layers x 3 columns x phi_b",
+      len(th) == 3 and len(set(th)) == 3
+      and abs(th[0] - th[2] - 0.06) < 1e-9, str(th))
+
+print("[R27 #42] N-D box sizes from an alias or an exponential scan: "
+      "pre-flight")
+run_raises("2-D n_layers_x : #H#, alias step -0.5",
+           nd().replace("n_layers_x : 12", "n_layers_x : #H#")
+           + "alias : H : value : 12\nvar : alias-H : scan : value\n"
+           "var : alias-H : step : -0.5\nvar : alias-H : end_value : "
+           "11\nstart\n", ValueError,
+           ["step 1", "H = 11.5", "n_layers_x", "whole number"])
+run_raises("2-D exponential n_layers_x 12 -> 10, steps 30",
+           nd() + "var : lat-L : scan : n_layers_x\nvar : lat-L : "
+           "scale : exponential\nvar : lat-L : steps : 30\n"
+           "var : lat-L : end_value : 10\nstart\n", ValueError,
+           ["10.954451150103322", "whole number"])
+
+print("[R27 #28] N-D per-axis ghost coordinates (Namics grammar)")
+YW = L2.format(nx=10, ny=6) + "lat : L : {b} : surface\n" + POL + PRO
+one_d = run("lat : L : n_layers : 6\nlat : L : lowerbound : surface\n"
+            + POL.format(rng="lowerbound") + PRO + "start\n")
+res = {}
+for rng, b in (("1,lowerbound;10,lowerbound", "lowerbound_y"),
+               ("1,0;10,0", "lowerbound_y"), ("lowerbound_y", "lowerbound_y"),
+               ("1,upperbound;10,upperbound", "upperbound_y"),
+               ("1,7;10,7", "upperbound_y"), ("upperbound_y", "upperbound_y"),
+               ("lowerbound", "lowerbound_x"),
+               ("lowerbound,1;lowerbound,6", "lowerbound_x"),
+               ("0,1;0,6", "lowerbound_x")):
+    res[rng] = run(YW.format(b=b, rng=rng) + "start\n")
+t1 = one_d[0][0][0]
+ylo = res["1,lowerbound;10,lowerbound"]
+A = ylo[1][:, 2].reshape(10, 6)
+check("y-lo wall == 10 x the 1-gradient wall (theta, Omega)",
+      abs(ylo[0][0][0] - 10 * t1) < 1e-9
+      and abs(ylo[0][0][1] - 10 * one_d[0][0][1]) < 1e-9,
+      f"{ylo[0][0]} vs 10 x {one_d[0][0]}")
+check("y-lo wall: phi independent of x", np.ptp(A, axis=0).max() < 1e-12,
+      str(np.ptp(A, axis=0).max()))
+check("y-lo wall: phi(y) == the 1-gradient profile",
+      np.abs(A[0] - one_d[1][:, 1]).max() < 1e-9)
+for a, b in (("1,0;10,0", "1,lowerbound;10,lowerbound"),
+             ("lowerbound_y", "1,lowerbound;10,lowerbound"),
+             ("1,7;10,7", "1,upperbound;10,upperbound"),
+             ("upperbound_y", "1,upperbound;10,upperbound"),
+             ("lowerbound,1;lowerbound,6", "lowerbound"),
+             ("0,1;0,6", "lowerbound")):
+    check(f"'{a}' == '{b}' bit for bit",
+          res[a][0] == res[b][0] and np.array_equal(res[a][1], res[b][1]))
+check("y-hi wall == the y-lo wall mirrored",
+      abs(res["1,7;10,7"][0][0][0] - ylo[0][0][0]) < 1e-11)
+cyl = run(L2.format(nx=5, ny=6).replace("geometry : flat",
+                                        "geometry : cylindrical")
+          + "lat : L : lowerbound_y : surface\n"
+          + POL.format(rng="1,lowerbound;5,lowerbound") + PRO + "start\n")
+C = cyl[1][:, 2].reshape(5, 6)
+check("2-D cylindrical z-lo wall: phi(r, z) == the 1-gradient profile "
+      "for every r", np.abs(C - one_d[1][:, 1][None, :]).max() < 1e-9,
+      str(np.abs(C - one_d[1][:, 1][None, :]).max()))
+d3 = run("lat : L : gradients : 3\nlat : L : geometry : flat\n"
+         "lat : L : n_layers_x : 3\nlat : L : n_layers_y : 3\n"
+         "lat : L : n_layers_z : 6\nlat : L : upperbound_z : surface\n"
+         + POL.format(rng="1,1,upperbound;3,3,upperbound") + "start\n")
+check("3-D z-hi wall == 9 x the 1-gradient wall",
+      abs(d3[0][0][0] - 9 * t1) < 1e-9, f"{d3[0][0][0]} vs {9 * t1}")
+for lbl, b, rng, words in (
+        ("ghost coordinate on a mirror face", "upperbound_y", "1,0;10,0",
+         ["lowerbound_y : surface", "frozen_range : 1,1;10,1"]),
+        ("partial ghost patch", "lowerbound_y", "1,0;5,0",
+         ["partial patch", "whole face"]),
+        ("ghost + interior span", "lowerbound_y", "1,0;10,2",
+         ["AND interior"]),
+        ("ghost coordinates on two axes", "lowerbound_y", "0,0;0,0",
+         ["more than one axis"]),
+        ("a coordinate beyond the ghost plane", "lowerbound_y", "1,8;10,8",
+         ["not within"]),
+        ("a non-numeric token", "lowerbound_y", "foo,1;foo,6",
+         ["'foo'", "per-axis tokens"]),
+        ("a z face on a 2-D lattice", "lowerbound_y", "lowerbound_z",
+         ["no z axis"])):
+    raises(lbl, YW.format(b=b, rng=rng), ValueError, words)
+try:
+    build(nd(rng="lowerbound", extra=""))
+    check("N-D ghost-wall advice names lowerbound_x", False, "built")
+except ValueError as e:
+    check("N-D ghost-wall advice names lowerbound_x and an N-D box",
+          "lowerbound_x : surface" in str(e)
+          and "frozen_range : 1;1" not in str(e)
+          and "frozen_range : 1,1;1,3" in str(e), str(e))
 
 print(f"all done ({failures} failure(s))")
 

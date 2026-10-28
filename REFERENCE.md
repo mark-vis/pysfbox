@@ -378,7 +378,12 @@ lamellar stack) is not yet ported and raises `NotImplementedError`; the same
 physics runs as `gradients : 2`, `geometry : flat` with
 `lowerbound_x/upperbound_x : periodic` and `n_layers_y : 1`. The N-D keys
 (`lowerbound_x`, ...) raise with `gradients : 1`, and `lowerbound`/`upperbound`
-raise with `gradients : 2/3`.
+raise with `gradients : 2/3`. The same holds for the layer counts: `n_layers_x/y/z`
+(and `theta_range`/`phi_range`) raise with `gradients : 1`, `n_layers` raises
+with `gradients : 2/3` and `n_layers_z` with `gradients : 2` (they used to be
+ignored, and a `var` scan of the ignored key wrote identical rows under changing
+labels). A scan of the other dimensionality's layer key raises before step 0
+(Namics refuses that scan too; a static stray key it accepts silently).
 
 ### Chain statistics (`Markov`)
 
@@ -401,6 +406,11 @@ a padded grid with one ghost layer per side per axis.
 | `n_layers_y` | 2D, 3D | cells along axis 2 |
 | `n_layers_z` | 3D | cells along axis 3 |
 
+N-D box sizes are whole layers (a fractional value or step raises). An
+alias-driven (`n_layers_x : #H#`) or exponential `n_layers_x/y/z` scan is
+checked against that before step 0, so an off-grid rung raises before any row
+is written.
+
 **Geometry** (`geometry`, default `flat`; axis roles: `x`/`z` Cartesian, `r`
 radial, `theta` colatitude, `phi` azimuth):
 
@@ -422,11 +432,16 @@ radial periodicity raises: the stencil would not conserve mass).
 
 **Box ranges** — frozen/pinned segment ranges on the N-D grid use the
 coordinate grammar `xlo,ylo[,zlo];xhi,yhi[,zhi]` (1-based interior indices per
-axis), or the single-axis idioms `lowerbound` / `upperbound` (a whole wall on
-axis 1). A wrong coordinate count raises `range '...' needs N coordinates per
-corner`. These appear on `mon`/`mol` range lines, not in the `lat` block
-itself. A single-layer box flush against a boundary that spans the *full* face
-is treated as a solid wall; a partial patch stays an interior mask.
+axis, with Namics' per-axis tokens `firstlayer`, `lastlayer`, `lowerbound` =
+0 and `upperbound` = n + 1), or the single keywords `lowerbound` /
+`upperbound` (a whole wall on axis 1) and `lowerbound_x|y|z` /
+`upperbound_x|y|z`. The coordinates 0 and n + 1 are the boundary (ghost)
+layers: `1,lowerbound;nx,lowerbound` = `1,0;nx,0` = `lowerbound_y` is a frozen
+wall on the lower y face. A wrong coordinate count raises `range '...' needs N
+coordinates per corner`. These appear on `mon`/`mol` range lines, not in the
+`lat` block itself. A single-layer box flush against a boundary that spans the
+*full* face is treated as a solid wall; a partial patch stays an interior
+mask.
 
 Other N-D keys: `lattice_type` must be `simple_cubic` (`hexagonal` raises);
 `FJC_choices` must be `3` (refinement > 3 raises); `offset_first_layer` offsets
@@ -541,9 +556,19 @@ xlo,ylo[,zlo] ; xhi,yhi[,zhi]
 
 Coordinates are 1-based interior indices per axis; each corner must list exactly
 `gradients` coordinates (`range '…' needs N coordinates per corner` otherwise). A
-single corner (no `;`) selects one cell. `lowerbound`/`upperbound` are also
-accepted and refer to the lower/upper face of the **first** axis (and need
-`lowerbound_x`/`upperbound_x : surface`, as in 1-D). A box that is
+single corner (no `;`) selects one cell. Each coordinate may also be one of
+Namics' per-axis tokens `firstlayer` (1), `lastlayer` (n), `lowerbound` (0) or
+`upperbound` (n + 1); 0 and n + 1 are the boundary (ghost) layers, and a box
+there is a wall in that layer only if it is the ghost layer on exactly one axis
+and spans the full face on every other axis (`1,lowerbound;nx,lowerbound` =
+`1,0;nx,0` = the lower y face). A partial patch in a ghost layer, a box that
+spans a ghost layer and interior layers, ghost coordinates on two axes, a
+coordinate outside `0..n+1` and an unknown token raise. `lowerbound`/`upperbound`
+are also accepted as whole strings and refer to the lower/upper face of the
+**first** axis; `lowerbound_x|y|z` / `upperbound_x|y|z` name the face of any
+axis. Every ghost-layer wall needs the `surface` bound on its face
+(`lowerbound_y : surface`, ...; with a mirror bound the advice names the face's
+key and an interior box such as `frozen_range : 1,1;10,1`). A box that is
 one layer thick against a boundary **and spans the full face on every other axis**
 is treated as a solid wall face (its ghost hyperplane is filled). A *partial*
 boundary patch is deliberately kept as an interior box and is **not** promoted to
@@ -1430,7 +1455,7 @@ var : mol-poly : end_value : 100
 | param | values | default | meaning |
 |---|---|---|---|
 | `scan` | a parameter name | — (required) | marks the block a scan; value = the parameter to sweep (`theta`, `phibulk`, `n`, `n_layers`, `chi_X`, `alphabulk`, …, or `NAME-value` for an alias) |
-| `step` | real (may be negative) | `1` | linear increment per step. An `n_layers` step must be a whole number of layers: a fractional step raises before the scan starts (it used to solve the truncated box and label the row with it). |
+| `step` | real (may be negative) | `1` | linear increment per step. An `n_layers` (or `n_layers_x/y/z`) step must be a whole number of layers: a fractional step raises before the scan starts (it used to solve the truncated box and label the row with it). An alias or exponential scan that drives a layer count is checked rung by rung before step 0 as well. A scan of a layer key the lattice does not read (`n_layers` on `gradients : 2/3`, `n_layers_x` on `gradients : 1`) raises. |
 | `end_value` | real | — (required) | last value of the sweep |
 | `scale` | `linear` / `exponential` | `linear` | `linear` = constant step; `exponential` = log-spaced (see below) |
 | `steps` | int | `1` | **exponential only**: number of steps per decade |
@@ -1578,9 +1603,17 @@ geometries the N-D lattice supports — cross-ref `lat`/`mon`):
 
 - `lowerbound` / `upperbound` — a wall on the first axis' low/high face (needs
   the `surface` bound on that face).
+- `lowerbound_x|y|z` / `upperbound_x|y|z` — a wall on that axis' low/high face
+  (needs the `surface` bound on that face; an axis the lattice lacks raises).
 - `xlo,ylo[,zlo];xhi,yhi[,zhi]` — an inclusive box in 1-based per-axis interior
   coordinates. Each corner must supply `gradients` coordinates (else it raises);
-  omitting the second corner (`;xhi,…`) selects a single layer.
+  omitting the second corner (`;xhi,…`) selects a single layer. A coordinate
+  may be a number `0..n+1` or one of Namics' per-axis tokens `firstlayer` (1),
+  `lastlayer` (n), `lowerbound` (0), `upperbound` (n + 1).
+- The coordinates `0` and `n+1` are the ghost layers: a box there is a wall in
+  that ghost layer (`1,lowerbound;nx,lowerbound` = `1,0;nx,0` = `lowerbound_y`)
+  only if it covers the full face; a partial ghost patch, a ghost + interior
+  span and ghost coordinates on two axes raise.
 - A one-layer-thick box that spans a **full** boundary face is treated as a wall
   face (it fills the ghost hyperplane); a **partial** patch stays an interior
   mask (it will *not* fake solid contact along the whole boundary).

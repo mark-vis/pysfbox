@@ -100,9 +100,11 @@ def _layer_count(text, key):
     v = float(text)
     if v != int(v) or v < 1:
         raise ValueError(
-            f"lat : {key} : {text} must be a positive integer (sub-layer "
-            "box sizes on refined lattices are a pysfbox-dev extension; "
-            "this release steps whole layers)")
+            f"lat : {key} : {text} must be a positive integer"
+            + (" (sub-layer box sizes on refined lattices are a pysfbox-dev "
+               "extension; this release steps whole layers)"
+               if key == "n_layers" else
+               " (an N-D box size is a whole number of layers)"))
     return int(v)
 
 # physical constants for electrostatics, copied VERBATIM from Namics
@@ -314,6 +316,30 @@ class System:
                 f"lat : {wrong[0]} does not apply with gradients : "
                 f"{gradients} (1 gradient: lowerbound/upperbound; 2 or 3: "
                 "lowerbound_x, upperbound_y, ...)")
+        # the same for the layer counts: a stray key was dropped silently,
+        # and a var scan of it wrote a table of identical rows under
+        # changing labels (review 27 Oct 2026, #7). Stricter than Namics,
+        # which accepts a static stray key (it does refuse the scan,
+        # lattice.cpp:608-622)
+        counts = (["n_layers"] if gradients == 1 else
+                  ["n_layers_x", "n_layers_y"]
+                  + (["n_layers_z"] if gradients == 3 else []))
+        wrong = [k for k in lp if re.fullmatch(r"n_layers(_[xyz])?", k)
+                 and k not in counts]
+        if wrong:
+            raise ValueError(
+                f"lat : {wrong[0]} does not apply with gradients : "
+                f"{gradients}: the box size is read from "
+                f"{' / '.join(counts)} only; drop the line (it would be "
+                "ignored, and a var scan of it would vary nothing)")
+        if gradients == 1:
+            wrong = [k for k in lp if k in ("theta_range", "phi_range")]
+            if wrong:
+                raise ValueError(
+                    f"lat : {wrong[0]} does not apply with gradients : 1 "
+                    "(angular ranges belong to polar/spherical N-D "
+                    "lattices, which PySFBox does not support); drop the "
+                    "line")
         if last(lp, "lambda") is not None and (
                 gradients > 1 or int(float(last(lp, "FJC_choices", 3))) > 3):
             # only the fjc = 1 three-point stencil has a lambda to override;
