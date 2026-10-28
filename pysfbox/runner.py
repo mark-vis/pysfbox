@@ -503,6 +503,15 @@ def _target_error(system, target):
         kind, cur = system.get_value("mol", obj, prop_lookup)
         if cur is None:
             raise ValueError(f"var target: mol '{obj}' has no '{prop}'")
+        if prop == "mu" and not np.isfinite(cur):
+            # an absent molecule (phibulk 0 or theta 0) has mu = -inf: no
+            # finite error to bracket on (review 27 Oct 2026, #66)
+            raise ValueError(
+                f"var target: mol '{obj}' has mu = {cur} at this probe (the "
+                "molecule is absent: phibulk 0 or theta 0) -- start the "
+                "search closer to the target, where the molecule is "
+                "present, or shrink newton : super_deltamax so the probes "
+                "do not reach zero amount")
         err = (cur / val - 1.0) if val != 0 else cur
         if prop == "phibulk":
             err = -err

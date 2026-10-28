@@ -18,6 +18,9 @@
 // The state equals a fixed-charge wall tuned to psi(1) = -1 to 1e-14.
 // The u columns are the full potentials (finding 50): u = -ln(phi/phibulk)
 // for these monomers.
+// kal sys : electrode_charge (review 27 Oct #43, 28 Oct 2026; column added,
+// every other column unchanged): sigma = -0.0126297 = sum(q_electrode),
+// = -dOmega/dpsi0 here (all molecules free) and minus the solution charge.
 
 lat : mylat : gradients : 1
 lat : mylat : geometry : planar
@@ -75,4 +78,5 @@ kal : mol : * : MU
 kal : lat : mylat : n_layers
 kal : newton : isaac : residual  
 kal : sys : NN : grand_potential 
+kal : sys : NN : electrode_charge
 start

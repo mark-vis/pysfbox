@@ -1,0 +1,63 @@
+// CHEMICAL POTENTIAL OF AN ABSENT MOLECULE (ref 28 Oct 2026, review
+// 27 Oct #66; ~0.1 s). An adsorbing (A)20 (chi_S -1, chi_W 0.5) in a
+// 30-layer box next to its solvent:
+//   start 1  free, phibulk 1e-10: mu -32.0258509300 = the closed form
+//            ln p + 1 - p - N(1 - p) + N chi (1 - p)^2 at p = 1e-10;
+//   start 2  free, phibulk 0: the molecule is absent, mu = -inf;
+//   start 3  restricted, theta 1e-8: mu -30.890773;
+//   start 4  restricted, theta 0: absent again, mu = -inf.
+// mu = -inf is Namics parity (oracle 3e9eafd on this input: -inf on rows
+// 2 and 4, rows 1/3 to 3e-12; its theta 14.755, Omega -2.682 and
+// F -inf on the absent rows are garbage, PySFBox prints theta 0 and a
+// finite F/Omega at the solver floor). PySFBox printed 0.0 before, which
+// is indistinguishable from a genuine pure-component mu = 0. The
+// characteristic function `X : F-pol` skips the absent molecule's n mu
+// term (0 * -inf would be nan), so X = F on rows 2 and 4. The NiN branch
+// (theta > 0 with a non-finite ln GN) and the mu search target's refusal
+// of a -inf probe are in tests/observable_conventions.py.
+lat : NN : n_layers : 30
+lat : NN : geometry : planar
+lat : NN : lattice_type : simple_cubic
+lat : NN : lowerbound : surface
+
+mon : S : freedom : frozen
+mon : S : frozen_range : lowerbound
+mon : A : freedom : free
+mon : A : chi_S : -1
+mon : A : chi_W : 0.5
+mon : W : freedom : free
+
+mol : pol : composition : (A)20
+mol : pol : freedom : free
+mol : pol : phibulk : 1e-10
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+sys : NN : X : F-pol
+
+newton : NN : tolerance : 1e-10
+
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : n
+kal : mol : pol : mu
+kal : mol : W : mu
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+kal : sys : NN : X
+
+start
+
+mol : pol : phibulk : 0
+
+start
+
+mol : pol : freedom : restricted
+mol : pol : theta : 1e-8
+
+start
+
+mol : pol : theta : 0
+
+start

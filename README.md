@@ -54,7 +54,8 @@ free-energy/chemical-potential index terms, the fixed-potential electrode's
 field energy and work term, the free-energy term of states with different χ,
 the `critical_ratio` composition) or where a Namics output column is not the
 quantity its name promises (`Laplace_pressure` is the two-sided pressure
-difference; moments of a vanishing excess print `nan`) — each noted in the
+difference; moments of a vanishing excess print `nan`, and the moment
+columns skip frozen interior sites) — each noted in the
 relevant section below. Inputs that Namics refuses, and a few it accepts but
 solves wrongly, raise with an explanation instead of running.
 
@@ -172,7 +173,8 @@ solves wrongly, raise with an explanation instead of running.
   and `.pro` (x at half-integer layers + `%.20g` columns), with Namics file
   numbering. Unknown output properties print `NiN` plus a warning — exactly
   like Namics. Implemented kal properties: `sys` grand_potential,
-  free_energy (and `free_energy (po)`), the characteristic function `X`
+  free_energy (and `free_energy (po)`), electrode_charge (the σ of a
+  fixed-potential electrode; PySFBox extension), the characteristic function `X`
   (declared with `sys : NN : X : F-water-Na-Cl`, as in Namics), iterations,
   residual; `lat`
   n_layers / volume; `mol` theta, theta_exc, phibulk, Mu/mu (chemical

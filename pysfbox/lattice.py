@@ -317,7 +317,7 @@ class Lattice1D:
     def weighted_sum(self, X):
         return float(np.dot(X[self.iv], self.L[self.iv]))
 
-    def moment(self, X, Xb, n):
+    def moment(self, X, Xb, n, weight=None):
         # z_phys is in bond units and L is the physical layer volume, so
         # this sum IS the physical moment, fjc-independent under
         # refinement. Do NOT divide by fjc again: Namics' LGrad1::Moment
@@ -327,5 +327,12 @@ class Lattice1D:
         # here. The 5 Jul 2026 physics review copied the inner /fjc
         # without the caller's *fjc; both dropped 20 Aug 2026
         # (collaborator bug report). Bit-identical at fjc=1.
-        return float(np.dot(self.z_phys**n, (X[self.iv] - Xb)
-                            * self.L[self.iv]))
+        # `weight` (a full-length site mask, System.ksam) restricts the sum
+        # to the free sites: a frozen interior site holds no mobile density
+        # and must not enter as -Xb of "depleted" volume (review 27 Oct
+        # 2026, #39; Namics sums every site). A weight of 1.0 everywhere
+        # is bit-identical to no weight.
+        w = (X[self.iv] - Xb) * self.L[self.iv]
+        if weight is not None:
+            w = w * weight[self.iv]
+        return float(np.dot(self.z_phys**n, w))

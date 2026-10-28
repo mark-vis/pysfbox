@@ -592,8 +592,17 @@ state explicitly, and states inherit their parent mon's χ unless overridden.
   lattice raises `fixed surface potential (e.psi0/kT) on a curved lattice is not
   supported yet`. With an electrode, `grand_potential` and `free_energy` are the
   **constant-potential** quantities: they include the electrode work term
-  `−½ σ ψ0` (σ = the charge the electrode takes up), so `dΩ/dψ0 = −σ` (the
-  Lippmann relation) holds. The equivalent fixed-charge wall (`valence` = σ at the
+  `−½ σ ψ0` (σ = the charge the electrode takes up). In general
+  `dΩ/dψ0 = −σ − Σ_i n_i dμ_i/dψ0` (sum over all molecules), so the Lippmann
+  relation `dΩ/dψ0 = −σ` holds only when **every molecule is free** (fixed μ).
+  A restricted molecule's μ moves with ψ0: with pinned or grafted restricted
+  molecules only (no bulk presence), `F − Σ_free n μ` is the Lippmann
+  potential; a restricted molecule that also sets the bulk moves the free
+  species' μ too (closure, neutralizer), and a derivative of the printed Ω
+  is then off by percents to tens of percents (measured 1.6 % for an
+  unpinned restricted polyelectrolyte, 52 % for a pinned brush). Read σ
+  directly from the kal column `sys : NN : electrode_charge` instead of
+  differentiating. The equivalent fixed-charge wall (`valence` = σ at the
   same site) reports `Ω_σ = Ω + σψ0`. The field energy that enters the segment
   weights is built from ψ0 at the electrode site. Both are deliberate deviations
   from Namics, which omits the work term and builds the field energy from the
@@ -1238,6 +1247,7 @@ Types: `int` → `%d`, `real` → `%.16e`, `string` → printed bare (like Namic
 | `lat` | `FJC_choices` | int | 2·fjc + 1 (3 on unrefined lattices) |
 | `lat` | `volume` | real | geometric volume of the interior lattice (closed form). On refined curved lattices (`FJC_choices > 3`) the summed site volumes differ from it by a few %, so θ − φ_b·volume is not an excess there; use `theta_exc` |
 | `sys` | `grand_potential` | real | grand potential Ω (per unit area / normalised as in Namics) |
+| `sys` | `electrode_charge` | real | σ, the charge the fixed-potential electrode(s) (`e.psi0/kT`) took up from their battery, in elementary charges per site area, summed over the electrode sites like `grand_potential` (per unit area on the planar lattice). Sign: positive when the electrode took up positive charge (a positive ψ0 against a salt solution gives σ > 0); with the solution's charge it makes the box neutral (the post-solve electroneutrality audit checks exactly that sum). The σ of the work term −½ σ ψ0 in Ω and F. Use this column for the electrode charge and the differential capacitance dσ/dψ0: `dΩ/dψ0 = −σ` holds only when every molecule is free (see `e.psi0/kT`). NiN with a note when the system has no electrode. PySFBox extension (no Namics counterpart) |
 | `sys` | `Laplace_pressure` | real | the pressure difference across the system, Δp = p<sub>in</sub> − p<sub>out</sub> = −ω(first interior layer) + ω(last interior layer), with ω(z) the grand-potential density (`pro : sys : X : grand_potential_density`, a local −pressure; 1-gradient; at fjc > 1 the first refined site of each outer physical layer). For a droplet/micelle/vesicle centred at the lower bound whose far side reaches a bulk plateau this is the Laplace pressure: Δp = 2γ/R<sub>s</sub> (sphere) or γ/R<sub>s</sub> (cylinder) at the surface of tension R<sub>s</sub>, 0 across a flat interface, and 0 at the pressure-balanced (tensionless) point that the `Laplace_pressure` search drives to. It is NOT a pressure difference when either end layer is not a bulk plateau (a wall, a brush, a box too small for the far field). **Deliberate deviation from Namics** (7 Oct 2026): Namics prints −ω(first) only, which equals Δp only when the far side sits at ω = 0 (a reservoir-terminated box: free molecules set the far field — every regression with this column is of this kind and printed unchanged). With restricted phase formers the implied bulk can land on a phase or an absent state, the far plateau carries ω ≠ 0, and the one-sided value is no pressure difference (a flat two-phase box: one-sided −0.0396, two-sided 3e-11). PySFBox prints a one-time note giving both values whenever the magnitude of ω(last) exceeds max(1e-7, 1e-4 × the magnitude of Δp), i.e. whenever the column differs visibly from Namics'. Same quantity as the `Laplace_pressure` search target |
 | `sys` | `phi_ratio` | real | the delta-constraint target ratio r (constraint runs only) |
 | `sys` | `free_energy`, `free_energy(po)` | real | Helmholtz free energy F (both spellings map to F; `(po)` is Namics' Ω + Σnμ route to the same value) |
@@ -1250,22 +1260,22 @@ Types: `int` → `%d`, `real` → `%.16e`, `string` → printed bare (like Namic
 | `mol` | `theta` | real | total amount Σ L·φ of the molecule |
 | `mol` | `theta_exc` | real | excess amount θ − (Σ L)·φ_bulk |
 | `mol` | `phibulk` | real | bulk volume fraction |
-| `mol` | `Mu`, `MU`, `mu` | real | chemical potential μ |
+| `mol` | `Mu`, `MU`, `mu` | real | chemical potential μ. An ABSENT molecule (free with `phibulk : 0`, restricted with θ = 0) prints `-inf` (ln 0), as in Namics; a present molecule whose ln G_N is not finite prints NiN with a note. The characteristic function `sys : X` skips an absent molecule's n·μ term (it is 0), and a `mu` search target refuses a probe on an absent molecule |
 | `mol` | `mu-<state>` | real | per-state μ = μ + ln(α_bulk,state), for chain-length-1 molecules only |
 | `mol` | `n` | real | number of molecules θ/N |
 | `mol` | `N`, `chainlength` | int | chain length (segments) |
 | `mol` | `GN` | real | single-chain partition function G_N (exact up to the double range; `inf` with a warning beyond it — μ and θ use ln G_N and stay exact) |
-| `mol` | `phiMax` | real | max φ over interior layers |
-| `mol` | `phiMin` | real | min φ over interior layers |
+| `mol` | `phiMax` | real | max φ over the free interior sites (frozen sites excluded) |
+| `mol` | `phiMin` | real | min φ over the free interior sites (frozen sites excluded: a wall frozen on layer 1 no longer prints 0) |
 | `mol` | `phiM` | real | φ at the last interior layer (the bulk/reservoir side) — the Namics `phiM`, **not** the maximum |
 | `mon` | `theta` | real | total amount of this monomer |
 | `mon` | `theta_exc` | real | excess amount θ − (Σ L)·φ_bulk |
 | `mon` | `phibulk` | real | bulk volume fraction of the monomer |
 | `mon` | `chi_<X>`, `chi-<X>` | real | Flory χ between this monomer and monomer `X` |
-| `mon` | `1st_M_phi_z` | real | first moment ⟨z⟩ of the excess profile (M₁/θ_exc) |
-| `mon` | `2nd_M_phi_z` | real | second moment M₂/θ_exc |
+| `mon` | `1st_M_phi_z` | real | first moment ⟨z⟩ of the excess profile over the free sites (M₁/Γ, Γ the free-site excess; see moments below) |
+| `mon` | `2nd_M_phi_z` | real | second moment M₂/Γ over the free sites |
 | `mon` | `RMS` | real | √(second moment); `nan` when the second moment is negative (as Namics) |
-| `mon` | `fluctuations` | real | √(M₂/θ_exc − ⟨z⟩²) |
+| `mon` | `fluctuations` | real | √(M₂/Γ − ⟨z⟩²); `nan` when that variance is negative beyond round-off (a sign-changing excess; Namics prints 0) |
 | `mon` | `alphabulk_<state>` | real | per-state bulk fraction, pushed on the parent monomer |
 | `mon` | `valence_<state>` | real | per-state valence |
 | `mon` | `phibulk_<state>` | real | per-state bulk volume fraction |
@@ -1333,10 +1343,24 @@ written column sums to F/Ω.
   the lattice Poisson solve; ≈ 0 over neutral regions.
 - **q** — the local charge density feeding the Poisson equation.
 - **moments** (`1st_M_phi_z`, `2nd_M_phi_z`, `RMS`, `fluctuations`) — moments
-  of the *excess* profile measured from the first layer, normalised by
-  θ_exc: `1st_M_phi_z` is the mean position ⟨z⟩ (brush/layer height proxy),
-  `2nd_M_phi_z` the mean-square position, `RMS = √M₂`, and `fluctuations` the
-  standard deviation √(⟨z²⟩ − ⟨z⟩²) (layer width). When θ_exc is round-off
+  of the *excess* profile measured from the box edge (the `.pro` x
+  coordinate), summed over the FREE sites only and normalised by the
+  free-site excess Γ = Σ<sub>free</sub> (φ − φ_bulk) L: `1st_M_phi_z` is the
+  mean position ⟨z⟩ (brush/layer height proxy), `2nd_M_phi_z` the
+  mean-square position, `RMS = √M₂`, and `fluctuations` the standard
+  deviation √(⟨z²⟩ − ⟨z⟩²) (layer width). A frozen interior site (a wall
+  `frozen_range : 1;1`, a frozen core) holds no mobile density and is left
+  out, so the same adsorbed layer gives the same width with the wall in the
+  ghost layer or frozen on layer 1, and ⟨z⟩ moves by exactly one layer per
+  frozen layer (the origin stays the box edge). Without interior frozen
+  sites Γ = θ_exc and nothing changes. This *intentionally deviates* from
+  Namics, which sums every site and divides by θ_exc (a frozen site enters
+  as −φ_bulk of depleted volume: on a wall frozen on layer 1 its width read
+  0.84 for a layer of width 1.87, and 0 one frozen layer further; changed
+  28 Oct 2026); `theta_exc` itself keeps the box convention.
+  `fluctuations` prints `nan` when the variance is negative beyond
+  round-off (a sign-changing excess; Namics prints 0, a plausible-looking
+  width), as `RMS` does for M₂ < 0. When Γ is round-off
   (relative 1e-10, e.g. a uniform state) all four print `nan` instead of a
   meaningless 0/0 ratio (Namics prints the ratio). All four are in bond-length
   units and independent of lattice refinement (`FJC_choices`) — fixed
