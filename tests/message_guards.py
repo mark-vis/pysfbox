@@ -49,8 +49,11 @@ def check(label, ok, detail=""):
         failures += 1
 
 
-# an A10/B10 blend slab against a solid wall: kJ0 is gated (Namics'
-# compute_kJ0, not ported), X is not declared, kJ0x is a typo
+# an athermal A10/B10 mixture against a solid wall (chi 0: one phase,
+# converges in tens of iterations on every platform -- the chi 1.0 blend is
+# two-phase, its interface position a soft mode, ~4000 iterations here and
+# over the 8000 limit on the Linux CI): kJ0 is gated (Namics' compute_kJ0,
+# not ported), X is not declared, kJ0x is a typo
 SLAB = """
 lat : NN : n_layers : 40
 lat : NN : geometry : flat
@@ -58,7 +61,7 @@ lat : NN : lowerbound : surface
 lat : NN : upperbound : mirror
 mon : A : freedom : free
 mon : B : freedom : free
-mon : A : chi_B : 1.0
+mon : A : chi_B : 0.0
 mol : A : composition : (A)10
 mol : A : freedom : restricted
 mol : A : theta : {theta}
