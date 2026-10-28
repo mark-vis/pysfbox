@@ -14,10 +14,13 @@ neutralizer bulk, [30] bound values + wrong-dimension keys, [31] lambda at
 fjc>1/N-D, [36] 1-D range bounds, [46] micro/bate blocks, [59] mol
 freedom/amount, [61] unused state chi, [71] UTF-8 BOM, [84] mu : 0,
 [45] var scan validation, [53] one target per var block; [X] the
-characteristic-function parse errors and compute_kJ0 (9 Oct 2026).
+characteristic-function parse errors and compute_kJ0 (9 Oct 2026); [E] a
+fixed-potential electrode on a refined lattice is refused at build, not
+as an 'interior electrode' at the first residual (28 Oct 2026).
 """
 import contextlib
 import io
+import math
 import os
 import sys
 import tempfile
@@ -384,6 +387,57 @@ builds("X : F - water - pol (spaces are free, as in Namics)",
 raises("compute_kJ0 is refused with the pointer",
        WALL + "sys : NN : compute_kJ0 : true\n", NotImplementedError,
        ["compute_kJ0", "bare first and second moments", "curved ladders"])
+
+print("[E] fixed surface potential (e.psi0/kT) on a refined planar lattice")
+EL = """
+lat : flat : n_layers : 30
+lat : flat : geometry : planar
+lat : flat : lowerbound : surface
+lat : flat : FJC_choices : {fjc}
+mon : S : freedom : frozen
+mon : S : frozen_range : 1;1
+mon : S : {wall}
+mon : Na : freedom : free
+mon : Na : valence : 1
+mon : Cl : freedom : free
+mon : Cl : valence : -1
+mon : W : freedom : free
+mol : cl : composition : (Cl)1
+mol : cl : freedom : free
+mol : cl : phibulk : 0.01
+mol : na : composition : (Na)1
+mol : na : freedom : neutralizer
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+newton : NN : tolerance : 1e-11
+"""
+for fjc in (5, 7):
+    raises(f"e.psi0/kT at FJC_choices {fjc}: refused at System build",
+           EL.format(fjc=fjc, wall="e.psi0/kT : -1"), NotImplementedError,
+           ["FJC_choices", "refined", "valence"])
+    try:
+        build(EL.format(fjc=fjc, wall="e.psi0/kT : -1"))
+    except NotImplementedError as e:
+        check(f"FJC_choices {fjc}: the message no longer says 'interior'",
+              "interior" not in str(e), str(e))
+    builds(f"a fixed-charge wall (valence) at FJC_choices {fjc} still builds",
+           EL.format(fjc=fjc, wall="valence : -0.2"))
+sel = build(EL.format(fjc=3, wall="e.psi0/kT : -1"))
+with contextlib.redirect_stdout(io.StringIO()):
+    sel.solve()
+check("the FJC_choices 3 electrode still converges with psi[1] = psi0",
+      abs(sel.psi[1] + 1.0) < 1e-12
+      and math.isfinite(sel.grand_potential()), f"psi[1] = {sel.psi[1]}")
+mlw = EL.format(fjc=3, wall="e.psi0/kT : -1").replace(
+    "frozen_range : 1;1", "frozen_range : 1;2")
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        build(mlw).solve()
+    check("a two-layer electrode (1;2) is refused", False,
+          "solved without complaint")
+except NotImplementedError as e:
+    check("a two-layer electrode (1;2) is refused as a multi-layer block",
+          "multi-layer" in str(e), str(e))
 
 print(f"all done ({failures} failure(s))")
 

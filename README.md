@@ -132,8 +132,10 @@ solves wrongly, raise with an explanation instead of running.
   each site's Poisson faces sit at r ± 1/(2·fjc) around the site, where Namics
   puts them half a refined cell inward — so expect a deviation from an
   unpatched Namics on that combination (planar refined charged runs share the
-  bond-length correction). Curved fixed-potential electrodes
-  raise a clear message.
+  bond-length correction). Curved fixed-potential electrodes, and
+  fixed-potential electrodes on refined lattices (`FJC_choices > 3`; use
+  `FJC_choices : 3` or a fixed-charge `valence` wall), raise a clear
+  message.
 - **Weak (multistate) charges**: `state : AH : mon : A` + `state : AH :
   valence : 0` attach annealed internal states to a segment;
   `reaction : weak : equation : 1(AH) + 1(H2O) = 1(AM) + 1(H3O)` +
@@ -171,10 +173,11 @@ solves wrongly, raise with an explanation instead of running.
 - **Output**: `.kal` (header + one row per calculation/var step, `%.16e`)
   and `.pro` (x at half-integer layers + `%.20g` columns), with Namics file
   numbering. Unknown output properties print `NiN` plus a warning — exactly
-  like Namics. Implemented kal properties: `sys` grand_potential,
-  free_energy (and `free_energy (po)`), the characteristic function `X`
-  (declared with `sys : NN : X : F-water-Na-Cl`, as in Namics), iterations,
-  residual; `lat`
+  like Namics (a known property with no value for the state prints `NiN`
+  with a note giving the reason). Implemented kal properties: `sys`
+  grand_potential, free_energy (and `free_energy (po)`), the
+  characteristic function `X` (declared with
+  `sys : NN : X : F-water-Na-Cl`, as in Namics), iterations, residual; `lat`
   n_layers / volume; `mol` theta, theta_exc, phibulk, Mu/mu (chemical
   potential), mu-STATE, n, N, chainlength, GN, phiM, phiMax, phiMin,
   `<alias>-value`; `mon` theta, theta_exc, phibulk, chi_X,
@@ -196,8 +199,9 @@ The **one-gradient** path (planar / cylindrical / spherical, including
 three-gradient** lattices — 2D flat, 2D cylindrical (r,z), 3D flat, as in
 Namics — currently cover neutral linear chains on `simple_cubic`; charged and
 branched systems there need `gradients : 1`. Curved fixed-potential
-electrodes raise. For weak charges, unbalanced reactions and states on frozen
-monomers are rejected (the latter also in Namics).
+electrodes, and fixed-potential electrodes at `FJC_choices > 3`, raise.
+For weak charges, unbalanced reactions and states on frozen monomers are
+rejected (the latter also in Namics).
 
 ## Extending (where things live)
 

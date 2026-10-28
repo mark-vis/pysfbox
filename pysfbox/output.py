@@ -44,9 +44,18 @@ def write_kal(path, specs, system, new_file):
                 fields.append(f"{val:.16e}")
             elif typ == "string":
                 fields.append(str(val))         # bare, like Namics' %s
-            else:
+            elif typ == "unknown":
+                # no such property (System.get_value's fall-through)
                 fields.append("NiN")
                 print(f"  warning: kal property {k}:{n}:{p} unknown -> NiN")
+            else:
+                # a RECOGNISED property with no value for this state (a
+                # gate; most print their reason first): a neutral line, so
+                # a deliberate NiN never reads like a typo and a silent
+                # gate still leaves a trace
+                fields.append("NiN")
+                print(f"  note: kal property {k}:{n}:{p} has no value for "
+                      "this state -> NiN")
         fp.write("\t".join(fields) + "\n")
 
 

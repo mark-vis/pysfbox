@@ -72,7 +72,11 @@ def fd_jacobian(residual, x, g=None):
     return J
 
 
-# warnings already printed this process (avoid per-scan-step spam)
+# warnings and notes already printed for this INPUT FILE (avoid per-scan-
+# step spam -- a var scan builds a System and writes a kal row per step).
+# runner._reset_file_notes clears it at the start of every file, so a
+# note that qualifies a printed number reaches every file of a multi-file
+# run (`pysfbox a.in b.in`, notebook loops)
 _WARN_NOTES = set()
 
 
@@ -329,7 +333,7 @@ class System:
                         "1/(6 fjc^2) b^2); omit the line, or write hexagonal "
                         "for inputs that must also run on Namics")
                 self.warnings.append(note)
-                if note not in _WARN_NOTES:     # once per process
+                if note not in _WARN_NOTES:     # once per input file
                     _WARN_NOTES.add(note)
                     print(f"  warning: {note}")
             self.lat = Lattice1D(
@@ -400,7 +404,7 @@ class System:
                             "once states exist (states carry the charge, "
                             "as in Namics)")
                     self.warnings.append(note)
-                    if note not in _WARN_NOTES:     # once per process
+                    if note not in _WARN_NOTES:     # once per input file
                         _WARN_NOTES.add(note)
                         print(f"  warning: {note}")
                     seg.valence = 0.0
@@ -569,6 +573,19 @@ class System:
                         "fixed surface potential (e.psi0/kT) on a curved "
                         "lattice is not supported yet (the curved electrode "
                         "condition is not yet ported to PySFBox)")
+            # a planar electrode on a refined lattice: the closed-form
+            # anchor in _psi_residual assumes ONE site per layer, so a
+            # refined `1;1` electrode (sites fjc..2fjc-1) was refused at the
+            # first residual as an 'interior' electrode. The physics is
+            # well posed; the anchor is not ported yet -- refuse at setup
+            # with the way out.
+            if self.fixedPsi0 and lat.fjc > 1:
+                raise NotImplementedError(
+                    "fixed surface potential (e.psi0/kT) on a refined "
+                    f"lattice (FJC_choices {lat.FJC} > 3) is not ported yet: "
+                    "the electrode anchor assumes one site per layer. Use "
+                    "FJC_choices : 3, or a fixed-charge wall (valence) on "
+                    "the refined lattice")
             # diagnostic hazard (oracle-tested 21 Jul 2026): for epsilon
             # outside 1..250 the compiled Namics PRINTS "Default value 80
             # used instead" but does NOT substitute -- it runs with the
@@ -586,7 +603,7 @@ class System:
                             "message (it only prints, never substitutes; "
                             "oracle-verified)")
                     self.warnings.append(note)
-                    if note not in _WARN_NOTES:     # once per process
+                    if note not in _WARN_NOTES:     # once per input file
                         _WARN_NOTES.add(note)
                         print(f"  warning: {note}")
             self.psiMask = np.zeros(lat.M, dtype=bool)
@@ -980,7 +997,7 @@ class System:
                     "through its states (as in Namics) -- give the chi per "
                     "state instead")
             self.warnings.append(note)
-            if note not in _WARN_NOTES:            # once per process
+            if note not in _WARN_NOTES:            # once per input file
                 _WARN_NOTES.add(note)
                 print(f"  warning: {note}")
 
@@ -1383,8 +1400,10 @@ class System:
                     all(i in (1, lat.M - 2) for i in el)):
                 raise NotImplementedError(
                     "fixed surface potentials are supported on single "
-                    "boundary-adjacent layers only (as in the Namics "
-                    "examples); interior electrodes are not yet ported to PySFBox")
+                    "boundary-adjacent layers only (frozen_range 1;1 or "
+                    "n;n, as in the Namics examples); multi-layer or "
+                    "interior electrode blocks are not yet ported to "
+                    "PySFBox")
             x_target = np.zeros(lat.M)
             # the charge the electrode takes up from its reservoir (the
             # battery), per site in the units of q: Gauss's law at the
@@ -1724,8 +1743,12 @@ class System:
 
     # ---- output property lookup (kal) -----------------------------------------
     def get_value(self, key, name, prop):
-        """Returns ('int'|'real'|'string'|None, value). None -> NiN, like
-        Namics."""
+        """Returns ('int'|'real'|'string', value), or a NiN pair:
+        ('unknown', None) when key:name:prop matches nothing (the final
+        fall-through: write_kal prints the Namics 'unknown -> NiN'
+        warning), (None, None) when the property is RECOGNISED but has no
+        value for this state (a gate, usually after its own note; write_kal
+        prints a neutral line, never 'unknown')."""
         lat = self.lat
         if prop.endswith("-value"):
             alias = prop[:-6]
@@ -1790,7 +1813,8 @@ class System:
                           f"{w_last:.3e}); PySFBox prints the two-sided "
                           f"-omega(first) + omega(last) = {dp:.6e}, while "
                           f"Namics prints -omega(first) only "
-                          f"(= {dp - w_last:.6e} here). Note printed once")
+                          f"(= {dp - w_last:.6e} here). Note printed once "
+                          f"per input file")
                 return "real", dp
             if prop == "phi_ratio" and self.constraintfields:
                 return "real", self.phi_ratio
@@ -1941,7 +1965,9 @@ class System:
                     return "real", np.sqrt(m2) if m2 >= 0 else float("nan")
                 fl = m2 - m1 * m1
                 return "real", np.sqrt(fl) if fl > 0 else 0.0
-        return None, None
+        # no match: the ONLY 'unknown' return (a gated, recognised column
+        # returns (None, None) above)
+        return "unknown", None
 
     def _full_potential(self, i):
         """The potential iteration species i actually feels, in kT: the

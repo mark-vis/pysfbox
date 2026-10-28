@@ -153,6 +153,13 @@ def run_case(in_name):
         return True, f"{len(refs)} file(s), {max(msgs)} ({dt:.1f} s)"
 
 
+# guard scripts run as suite cases (exit 0 = PASS), with the message
+# printed on success: (script stem, message)
+GUARD_SCRIPTS = (("input_guards", "all guards raise"),
+                 ("message_guards", "console notes and search diagnostics "
+                  "as expected"))
+
+
 def main(argv):
     pattern = argv[1] if len(argv) > 1 else ""
     inputs = sorted(os.path.basename(p)
@@ -168,20 +175,23 @@ def main(argv):
         ok, msg = run_case(name)
         print(f"  {'PASS' if ok else 'FAIL'}  {name:40s} {msg}")
         failures += not ok
-    # the input guards (tests/input_guards.py): "this input must RAISE"
-    # cannot be expressed as a reference comparison
-    if pattern in "input_guards":
+    # the guard scripts: "this input must RAISE" (tests/input_guards.py)
+    # and "this run must PRINT" (tests/message_guards.py) cannot be
+    # expressed as a reference comparison
+    for guard, ok_msg in GUARD_SCRIPTS:
+        if pattern not in guard:
+            continue
         import subprocess
         t0 = time.time()
         p = subprocess.run([sys.executable, os.path.join(
-            HERE, "input_guards.py")], capture_output=True, text=True)
+            HERE, guard + ".py")], capture_output=True, text=True)
         ok = p.returncode == 0
         bad = [ln for ln in p.stdout.splitlines() if "FAIL" in ln]
-        msg = (f"all guards raise ({time.time() - t0:.1f} s)" if ok
+        msg = (f"{ok_msg} ({time.time() - t0:.1f} s)" if ok
                else (bad[0].strip() if bad else p.stderr.strip()[-200:]))
-        print(f"  {'PASS' if ok else 'FAIL'}  {'input_guards':40s} {msg}")
+        print(f"  {'PASS' if ok else 'FAIL'}  {guard:40s} {msg}")
         failures += not ok
-        cases = cases + ["input_guards"]
+        cases = cases + [guard]
     for name in sorted(SKIP):
         if pattern in name:
             print(f"  SKIP  {name:40s} see SKIP note in this script")

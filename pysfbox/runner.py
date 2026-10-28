@@ -10,6 +10,16 @@ from .output import kal_path, pro_path, write_kal, write_pro
 from .system import InputAuditError, System
 
 
+def _reset_file_notes():
+    """Forget the once-per-FILE notes before the next input file. The note
+    set deduplicates per scan step, but a process can run several files
+    (`pysfbox a.in b.in`, notebook loops): a note that qualifies a printed
+    number (two-sided Laplace_pressure, kJ0, an undeclared X) must reach
+    every file whose numbers it qualifies."""
+    from . import system
+    system._WARN_NOTES.clear()
+
+
 def _num(s):
     """Parse a Namics numeric field the way Namics' Input::Get_Real does:
     a value is numeric only if it starts with a digit (or '-' then a digit).
@@ -511,6 +521,52 @@ def _target_error(system, target):
         f"var target '{item}-{obj} : {prop}' is not supported")
 
 
+def _classify_readouts(probes, c, rel=1e-9):
+    """Tell a noise-limited target from a JUMP in it, from the falsi's own
+    readouts clustered at the (collapsing) bracket point c.
+
+    probes: every (X, error) the search measured. Only the readouts with
+    |X - c| <= rel*|c| count: inside that window the target's smooth slope
+    moves the error by a negligible amount, so what remains is either the
+    inner solves' scatter (noise) or a step between two reproducible values
+    (a jump). The window is tight on purpose -- a wider one (1e-6|c|) lets a
+    steep slope pass for scatter. Group the readouts by sign:
+
+    - both signs with >= 2 readouts each, and each side reproducible
+      (max - min < 0.1 * the smaller of the two side means, in magnitude):
+      a JUMP, returns ("jump", None);
+    - both signs with >= 2 readouts but not reproducible, or one side with
+      >= 2 readouts scattering by >= 0.1 of its own mean: NOISE, returns
+      ("noise", floor) with floor = the RMS of the windowed readouts (NOT
+      the smallest one, the luckiest draw, which can sit below the floor);
+    - otherwise too few readouts to tell: ("unclear", None).
+
+    The start error plays no part: how far the search started from the
+    point says nothing about whether the error there is noise or a step (a
+    jump reached from a distant start used to be labelled noise, and the
+    advice to loosen super_tolerance accepted a state on one side of the
+    discontinuity)."""
+    near = [f for X, f in probes if abs(X - c) <= rel * abs(c)]
+    neg = [f for f in near if f < 0.0]
+    pos = [f for f in near if f > 0.0]
+
+    def spread(side):
+        return max(side) - min(side)
+
+    def mean_abs(side):
+        return abs(sum(side) / len(side))
+
+    if len(neg) >= 2 and len(pos) >= 2:
+        if max(spread(neg), spread(pos)) < 0.1 * min(mean_abs(neg),
+                                                     mean_abs(pos)):
+            return "jump", None
+        return "noise", float(np.sqrt(np.mean(np.square(near))))
+    for side in (neg, pos):
+        if len(side) >= 2 and spread(side) >= 0.1 * mean_abs(side):
+            return "noise", float(np.sqrt(np.mean(np.square(near))))
+    return "unclear", None
+
+
 def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
     """Scalar root find for the super-iteration: drive resid(X) (the signed
     target error) to zero by adjusting the search value X. resid(X) runs a
@@ -531,20 +587,33 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
         raise ValueError("var search: the initial search value is 0; the "
                          "search scales by it (declare a nonzero start)")
 
+    probes = []                 # every (X, f) probe: the collapse diagnosis
+
     def rf(X):
         # a failed inner SCF while marching the search variable can mean two
         # things: the probe stepped too far from the last converged state
         # (the bracket expands by a factor 1 + super_deltamax, and e.g. a
         # delta-pinned FLAT interface tolerates only tiny relative theta
         # moves), or the target really is unreachable/non-monotone -- name
-        # both, cheapest first
+        # both, cheapest first. The FIRST probe (at the start value) took
+        # no search step at all: there the cause is the change since the
+        # last converged state -- in a scan, the scan step.
         try:
-            return resid(X)
+            f = resid(X)
         except InputAuditError:
             # a refused state (the post-solve input audit) is not an SCF
             # failure: pass its message through
             raise
         except RuntimeError as e:
+            if not probes:
+                raise RuntimeError(
+                    f"{label} search: the inner SCF did not converge at the "
+                    f"start value {X:.6g} itself, before any search step "
+                    "(so super_deltamax is not the cause): in a scan, the "
+                    "scan step -- the change since the previous converged "
+                    "state -- is too large, declare a finer scan step; "
+                    "otherwise this state does not converge at the start "
+                    f"value (underlying: {e})") from e
             raise RuntimeError(
                 f"{label} search: the inner SCF did not converge at search "
                 f"value {X:.6g} (started from {x_start:.6g}); if that step "
@@ -552,6 +621,8 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
                 "(the bracket probes by a factor 1 + super_deltamax); "
                 "otherwise the target may be unreachable or non-monotone "
                 f"in the search variable (underlying: {e})") from e
+        probes.append((X, f))
+        return f
 
     grow = 1.0 + max(abs(deltamax), 1e-3)
     f0 = rf(x_start)
@@ -604,7 +675,6 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
     a, fa, b, fb = bracket
     ra, rb = fa, fb                 # the MEASURED errors at a and b (the
     #                                 Illinois weighting rescales fa only)
-    f_best = min(abs(f0), abs(fa), abs(fb))
     while it < itlimit:
         c = b - fb * (b - a) / (fb - fa)          # false-position step
         fc = rf(c)
@@ -624,28 +694,40 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
             # super_tolerance), or a JUMP in the target across the bracket
             # (a branch switch: spinodal, evaporation, a droplet changing
             # shape) -- never paper over the latter by loosening the
-            # tolerance.
+            # tolerance. Which one is told by the readouts clustered at c
+            # (_classify_readouts), never by how far the search started.
             lo, hi = (a, ra), (b, rb)
-            if f_best <= 1e-2 * abs(f0):
+            kind, floor = _classify_readouts(probes, c)
+            if kind == "noise":
                 hint = ("the error is noise-limited at ~"
-                        f"{f_best:.1e} (it shrank from {abs(f0):.1e}); if "
-                        "that offset is acceptable set 'newton : ... : "
-                        f"super_tolerance : {3.0 * f_best:.0e}'")
-            else:
-                hint = ("the target error JUMPS across this point (a "
-                        "discontinuity in the target: likely a branch "
+                        f"{floor:.1e} (the readouts at this point scatter "
+                        "by their own size between converged inner "
+                        "solves); if that offset is acceptable set "
+                        "'newton : ... : super_tolerance : "
+                        f"{3.0 * floor:.0e}'")
+            elif kind == "jump":
+                hint = ("the target error JUMPS across this point (repeated "
+                        "readouts on each side agree, with opposite signs: "
+                        "a discontinuity in the target, likely a branch "
                         "switch, e.g. a spinodal, evaporation or a shape "
                         "change of the converged state); the target value "
                         "is not reachable on a continuous branch from this "
                         "start -- change the target, or approach it with a "
                         "scan from the other side. Loosening "
                         "super_tolerance would accept a wrong state")
+            else:
+                hint = ("too few readouts at this point to tell solver "
+                        "noise from a jump in the target (a branch "
+                        "switch); rerun with a tighter inner "
+                        "'newton : ... : tolerance': noise shrinks with it, "
+                        "a jump does not. Do not loosen super_tolerance "
+                        "before that check: across a jump it would accept "
+                        "a wrong state")
             raise RuntimeError(
                 f"{label} search: the bracket collapsed at search value "
                 f"{c:.15g} with target error {fc:.3e} > super_tolerance "
                 f"{tol:.1e} (errors at the bracket ends: {lo[1]:.3e} at "
                 f"{lo[0]:.15g}, {hi[1]:.3e} at {hi[0]:.15g}); {hint}")
-        f_best = min(f_best, abs(fc))
         if fc * fb < 0.0:
             a, fa, ra = b, fb, rb
         else:
@@ -718,6 +800,7 @@ def _seed_by_species(x_old, sys_old, sys_new):
 def run_file(path, verbose=True):
     """Run all calculations in a Namics input file; writes .kal/.pro next
     to the input file. Returns the last System (for interactive use)."""
+    _reset_file_notes()
     calculations = read_input(path)
     _check_first_start(calculations[0])
     base = os.path.splitext(path)[0]
