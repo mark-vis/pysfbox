@@ -2,8 +2,15 @@
 // finding #9): a brush grafted at r = offset + 1 on a cylindrical domain
 // whose inner boundary r = 3 is a MIRROR, at FJC_choices 5. The inward
 // refined bonds that land in the fjc-deep lower ghost band are folded with
-// a (site, image)-symmetric area, the inner twin of the outer-mirror fold;
-// before the fix they used the unfolded area, which broke detailed balance:
+// ONE area per (site, image) pair. Since 28 Oct 2026 (review 27 Oct #8) it
+// is the smaller of the pair's two free-space face areas, which keeps the
+// site average non-negative at every offset; the 7 Oct rule (the face
+// midway between site and image) went negative at small offsets. Both are
+// reciprocal and non-negative on THIS lattice, so the reference moved by
+// the fold convention alone, an O(b/R) effect (regenerated 28 Oct 2026:
+// GN 0.729853 -> 0.729259, 8e-4; Omega 9e-5; profiles 8e-4; theta and the
+// orientation identity unchanged).
+// Before 7 Oct the unfolded area broke detailed balance:
 // theta came out 59.94 instead of 60 and GN/mu/F depended on the chain
 // orientation ((P)1(A)29 vs (A)29(P)1: mu -12.9995 vs -12.9589). The two
 // starts below are the SAME molecule written in opposite directions, so the

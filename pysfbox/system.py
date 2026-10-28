@@ -54,6 +54,20 @@ class MassAccountingError(InputAuditError):
     integrate to its amount (theta, or a segment type's share of it)."""
 
 
+class NegativeDensityError(InputAuditError):
+    """The audit's positivity check: a molecule's converged density is
+    negative on a free site -- the site average was not a probability
+    average there (the refined cylinder's axis row at offset 0, the one
+    non-stochastic stencil Lattice1D accepts)."""
+
+
+# a molecule's phi below -PHI_NEGATIVE_RTOL times its own maximum on the
+# free sites is refused (System._audit_positivity); propagators of
+# non-negative weights through a non-negative stencil are >= 0 exactly, so
+# anything beyond rounding means a negative transition weight
+PHI_NEGATIVE_RTOL = 1e-12
+
+
 def fd_jacobian(residual, x, g=None):
     """Forward-difference Jacobian J[i, j] = d g_i / d x_j of a residual
     function, one residual evaluation per column.  The step per column is
@@ -2292,9 +2306,14 @@ class System:
                         bound the free Poisson rows imply -- holds only if
                         the discrete Poisson stencil is flux-conservative
                         (telescoping faces), which the residual cannot see
+          positivity    every molecule's phi >= 0 on the free sites --
+                        automatic for a non-negative stencil; the refined
+                        cylinder's axis row at offset 0 (FJC_choices >= 11)
+                        is the one negative weight Lattice1D accepts
         """
         self._audit_amounts()
         self._audit_bulk()
+        self._audit_positivity()
         if g is not None:
             S, M = len(self.it_species), self.lat.M
             g = np.asarray(g, dtype=float)
@@ -2327,7 +2346,11 @@ class System:
                  "ONE propagator row (a long, strongly charged chain in a "
                  "large low-salt cell; extreme adsorption): its far tail "
                  "underflows. Try a smaller cell, more salt or a shorter "
-                 "chain; please report the input")
+                 "chain. A lattice stencil that breaks detailed balance "
+                 "loses mass the same way (a PySFBox defect: until 28 Oct "
+                 "2026 the refined curved lattice at offset 0 with "
+                 "FJC_choices 11, 19, 23, ...); please report the input "
+                 "either way")
         for m in self.molecules.values():
             if m.freedom != "restricted" or not m.theta > 0:
                 continue
@@ -2426,6 +2449,53 @@ class System:
                     "parameters than the ones this state used (a scan "
                     "step that changed a pK or alphabulk without "
                     "re-solving?). Please report the input")
+
+    def _audit_positivity(self):
+        """Every molecule's density is non-negative on the free sites (part
+        of _audit_solution). phi = sum Gf Gb / G1 over propagators of
+        non-negative Boltzmann weights, so a non-negative site average makes
+        it >= 0 exactly; Lattice1D._check_stencil guarantees that for every
+        lattice but one it accepts on purpose (decided 28 Oct 2026): the
+        refined CYLINDER at offset_first_layer 0 and FJC_choices >= 11,
+        whose axis row has a negative stay weight (lat.axis_stay; Namics
+        has the same rows). There a field that changes sharply next to the
+        axis can drive a propagator, and so phi, negative while the
+        residual converges -- this check makes that loud. NaN is left to
+        the incompressibility check."""
+        lat = self.lat
+        free = (np.asarray(self.ksam) > 0) & lat.interior
+        if not np.any(free):
+            return
+        for m in self.molecules.values():
+            ph = np.asarray(m.phi, dtype=float)[free]
+            top = float(np.max(np.abs(np.nan_to_num(ph))))
+            bad = ph < -PHI_NEGATIVE_RTOL * top
+            if not np.any(bad):
+                continue
+            j = int(np.argmin(np.where(bad, ph, np.inf)))
+            site = int(np.where(free)[0][j])
+            if getattr(lat, "axis_stay", None) is not None:
+                cause = (
+                    f"The lattice is the refined cylinder at "
+                    f"offset_first_layer 0 with FJC_choices {lat.FJC}: its "
+                    "axis row is not a probability average (stay weight "
+                    f"T00 = {lat.axis_stay:.4g}, the same rows as Namics), "
+                    "so a field that changes sharply next to the axis "
+                    "drives the propagators negative. Lower FJC_choices "
+                    "(9 or less keeps every weight >= 0) or set "
+                    "offset_first_layer > 0 (the inner mirror fold is "
+                    "non-negative)")
+            else:
+                cause = ("Every stencil PySFBox accepts has non-negative "
+                         "weights, so this is a PySFBox defect; please "
+                         "report the input")
+            self._audit_fail(
+                "non-negative density",
+                f"mol {m.name}: the converged density is {ph[j]:.6g} at "
+                f"free site {site} (flat index; its largest value is "
+                f"{top:.6g}). A negative density is no physical state, and "
+                "every observable of this state is meaningless. " + cause,
+                NegativeDensityError)
 
     def _audit_incompressibility(self, g_sp):
         """sum over molecules (+ frozen) of phi = 1 on every free site

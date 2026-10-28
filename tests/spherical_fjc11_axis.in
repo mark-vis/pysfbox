@@ -1,0 +1,54 @@
+// Refined SPHERE at offset 0, FJC_choices 11 (review 27 Oct 2026, #3): a
+// triblock pinned next to the axis (P on layers 1;2), restricted theta 30,
+// written in both orientations ((A)5(P)3(A)12, then (A)12(P)3(A)5). The two
+// kal rows must agree to the solver floor and theta must be 30 exactly.
+// Before the fix the stencil's axis test (2*rlow - r > 0 on an accumulated
+// float) KEPT the bond channel that ends exactly on the axis at
+// FJC_choices 11, 19, 23, 25, 27, 35, 37, 41 (it evaluates to +5.6e-17),
+// which breaks detailed balance (folded operator L-asymmetry 4e-4 here):
+// both orientations were refused by the mass audit (theta 29.99879 /
+// 29.99956) with an underflow message, and before the 26 Oct audit they
+// converged silently with orientation gaps of 8e-5 in mu and 3e-4 in F.
+// The decision is now taken on the integer target index; LAM changed only
+// at offset 0 for those eight FJC values.
+// No direct oracle: Namics carries the same test (LGrad1.cpp:80/97/126/143;
+// binary 3e9eafd on this input: theta 29.99370 / 29.99762, mu gap 2.7e-4),
+// so the engines disagree here by design. The validation is the
+// orientation identity + theta closure, plus the clean neighbours: at
+// FJC_choices 9 and 13 both engines keep detailed balance, and Namics
+// equals PySFBox at FJC 9 (Omega -2.14606977 both); lattice-level anchors
+// in tests/refined_curved_stencil.py (S1, and S6 for the FJC 19 twin of
+// this input).
+lat : NN : geometry : spherical
+lat : NN : n_layers : 12
+lat : NN : lattice_type : hexagonal
+lat : NN : FJC_choices : 11
+
+mon : W : freedom : free
+mon : A : freedom : free
+mon : A : chi_W : 0.4
+mon : P : freedom : pinned
+mon : P : pinned_range : 1;2
+mon : P : chi_W : 1.0
+
+mol : solvent : freedom : solvent
+mol : solvent : composition : (W)1
+mol : poly : freedom : restricted
+mol : poly : composition : (A)5(P)3(A)12
+mol : poly : theta : 30
+
+newton : NN : tolerance : 1e-10
+
+output : kal : append : false
+kal : mol : poly : theta
+kal : mol : poly : mu
+kal : mol : poly : GN
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+
+output : pro : append : false
+pro : mol : poly : phi
+start
+
+mol : poly : composition : (A)12(P)3(A)5
+start

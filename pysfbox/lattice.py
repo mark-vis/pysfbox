@@ -17,6 +17,16 @@ import numpy as np
 
 LAMBDA = {"simple_cubic": 1.0 / 6.0, "hexagonal": 0.25}
 
+# Lattice1D._check_stencil: a transition weight of the folded one-step
+# operator below -STENCIL_TOL, or a detailed-balance or row-sum defect above
+# STENCIL_TOL (relative), refuses the lattice
+STENCIL_TOL = 1e-12
+
+# once-per-process notes of the refined cylinder's axis rows (the offset-0
+# cylinder at FJC_choices >= 11 has a negative stay weight on its axis row;
+# Lattice1D._check_stencil exempts it, System audits phi >= 0)
+_AXIS_NOTES = set()
+
 
 def curved_face_radii(offset, fjc, M):
     """Face radii (refined units) of the curved 1-gradient Poisson operator
@@ -79,6 +89,18 @@ class Lattice1D:
         if geometry == "planar":
             offset_first_layer = 0.0
         self.offset = float(offset_first_layer)
+        # a curved lattice's first shell starts at r = offset: a negative
+        # value gives negative-volume (cylinder) or centre-folded (sphere)
+        # shells and silently wrong restricted amounts. Namics prints a
+        # message and resets it to 0 (lattice.cpp:380-384); PySFBox refuses
+        # rather than change the geometry silently (review 27 Oct 2026, #26)
+        if geometry != "planar" and not self.offset >= 0:
+            raise ValueError(
+                f"lat : offset_first_layer : {offset_first_layer} < 0 -- a "
+                f"{geometry} lattice needs a non-negative radial offset (the "
+                "first shell starts at r = offset_first_layer; Namics resets "
+                "a negative value to 0, PySFBox refuses rather than change "
+                "the geometry silently)")
         self.MX = self.fjc * int(n_layers)          # internal (refined) sites
         self.M = self.MX + 2 * self.fjc             # incl. fjc ghosts each side
         self.iv = slice(self.fjc, self.M - self.fjc)   # interior slice
@@ -94,11 +116,21 @@ class Lattice1D:
         # physical coordinate of the interior sites (Namics .pro: (k+0.5)/fjc);
         # for fjc=1 this is k+0.5 = z-0.5, matching the original output/moments
         self.z_phys = (np.arange(self.MX) + 0.5) / self.fjc
+        # the negative stay weight of the refined cylinder's axis row, the
+        # one exemption of _check_stencil (None: every weight is >= 0)
+        self.axis_stay = None
 
         if self.fjc == 1:
             self._setup_fjc1(geometry, lam, offset_first_layer)
         else:
             self._setup_fjc(geometry)
+        # second line of defence: every interior site must have a positive
+        # volume
+        if not np.all(self.L[self.iv] > 0):
+            raise ValueError(
+                f"Lattice1D {geometry}: a site with non-positive volume (min "
+                f"{float(np.min(self.L[self.iv])):.3g}) -- check "
+                "offset_first_layer")
 
     # ---- fjc = 1: original three-point lattice (unchanged) ------------------
     def _setup_fjc1(self, geometry, lam, offset_first_layer):
@@ -119,6 +151,22 @@ class Lattice1D:
         else:
             raise ValueError(f"unknown geometry '{geometry}'")
         self.l0 = 1.0 - self.l1 - self.l_1
+        # a custom `lat : lambda` must leave a step PROBABILITY in every
+        # layer (l1, l_1, l0 >= 0): 0 < lambda <= 1/2 planar/cylindrical,
+        # <= 1/3 for a sphere at offset 0 (its first layer stays with
+        # 1 - 3 lambda), between the two at offset > 0. Testing the built
+        # weights covers the offset dependence; out of range the chain
+        # statistics are no random walk and densities can leave [0, 1]
+        # with a converged status (review 27 Oct 2026, #41)
+        iv = self.iv
+        lo = min(float(self.l0[iv].min()), float(self.l1[iv].min()),
+                 float(self.l_1[iv].min()))
+        if not lam > 0 or lo < -1e-12:
+            raise ValueError(
+                f"lat : lambda : {lam} gives a negative or zero step weight "
+                f"(min {lo:.3g}) on the {geometry} lattice: need 0 < lambda "
+                "<= 1/2 (planar, cylindrical), <= 1/3 for a sphere at "
+                "offset_first_layer 0 (between 1/3 and 1/2 at offset > 0)")
         self.volume = (self.L[self.iv].sum() if geometry != "planar"
                        else float(self.MX))
         # at fjc = 1 the layers partition the domain exactly, so the
@@ -163,19 +211,78 @@ class Lattice1D:
         else:                              # cylinder: middle area doubled, area=r
             area = lambda rr: rr
             c_ext, c_mid = 1.0 / (FJC - 1), 2.0 / (FJC - 1)
-        # an INNER mirror at r = off (offset > 0, lowerbound mirror): inward
-        # channels landing in the fjc-deep lower ghost band read a mirror
-        # image, so they must be folded with an area that is symmetric in
-        # the (site, image) pair -- the mirror-plane area shifted half the
-        # bond projection into the domain, area(off + (r - rlow)), the
-        # inner twin of _reflect's area(off + edge - (rhigh - r)). The
-        # unfolded area(rlow) broke L-self-adjointness (L_i W(i->m) !=
-        # L_m W(m->i)): theta of a restricted brush missed its input and
-        # GN/mu/F depended on which chain end the composition starts from
-        # (review 7 Oct 2026, #9). Offset 0 (the axis: such channels are
-        # dropped) and a surface lowerbound (zero ghosts) are unchanged.
-        fold_lo = off > 0 and self.lowerbound != "surface"
+        edge = MX / fjc
+        # Channel j (inward) and FJC-1-j (outward) of refined site k land on
+        # site kt = k + j - fjc and k + fjc - j. EVERY keep/fold/absorb
+        # decision is taken on that INTEGER index, never on a float radius:
+        #   1 <= kt <= MX           interior: free-space area at the midpoint
+        #   kt <= 0, offset 0       the axis: dropped, the centre closes the row
+        #   kt <= 0, inner mirror   folded with area(min(rlow, 2 m - rlow)),
+        #                           m = off + 1/(2 fjc) the mirror plane: the
+        #                           smaller of the bond's free-space face and
+        #                           its image's (review 27 Oct 2026, #8)
+        #   kt <= 0, inner surface  absorbed by the solid core r < off with
+        #                           its free-space area (review 27 Oct, #9)
+        #   kt > MX, outer mirror   folded by _reflect (Namics' else-branch)
+        #   kt > MX, outer surface  absorbed by the solid shell with its
+        #                           free-space area (review 27 Oct, #2)
+        # The radii rlow/rhigh, accumulated in steps of 0.5/fjc as before,
+        # enter only the AREAS, so LAM is bit-identical wherever no decision
+        # changed. Why: (#3) at offset 0 the old axis test 2*rlow - r > 0
+        # evaluated the channel that ends ON the axis (r' = 0) to +5.6e-17
+        # at FJC_choices 11, 19, 23, 25, 27, 35, 37, 41, kept it, and broke
+        # detailed balance (restricted molecules lost mass, results
+        # depended on the chain orientation; Namics LGrad1.cpp:80/97/126/143
+        # carries the same test). (#2) a surface absorbs with the weight the
+        # bond has in free space -- the same model as a frozen shell on a
+        # larger mirror box, and how fjc = 1 and the inner surface already
+        # worked; the mirror-fold area made a concave outer wall absorb LESS
+        # than a planar one (Namics folds regardless of the bound).
+        # (#9) a bond from a site just outside a core of radius 0 < off < 1
+        # can land behind the axis (r' <= 0) while it enters the solid; the
+        # axis test returned it to the stay channel, so wall observables
+        # jumped at every off = 1 - k/fjc and did not converge in fjc.
+        # (#8) the inner mirror plane lies half a refined cell below the
+        # first site (set_bounds maps ghost k = 0 onto site 1, at r = off and
+        # off + 1/fjc). A bond from site k that lands in the ghost band at
+        # r_t arrives at the image site k' = 1 - kt, whose own bond into the
+        # band has the free-space face 2 m - rlow where site k's has rlow.
+        # Detailed balance needs ONE area for the pair; the smaller of the
+        # two free-space areas (the Metropolis choice) keeps every folded
+        # weight at or below its free-space value, so the stay weight never
+        # drops below the free-space stay weight: T >= 0 wherever that is
+        # (every cylinder; a sphere down to offset ~0.01 at FJC_choices 35+,
+        # where _check_stencil refuses). The 7 Oct 2026 rule, the face
+        # midway between site and image area(off + r - rlow), was
+        # reciprocal too, but its folded faces exceed the window VL at small
+        # offsets: negative stay weights (-0.19 at a sphere FJC 11, offset
+        # 0.5) and phi < 0 under a ~2 kT field on one refined site. On a
+        # cylinder below offset 1/2 - 1/fjc the smaller face can lie behind
+        # the axis (a negative signed area, as in free space); the direct
+        # bond to the same image outweighs it and T stays >= 0. The rule is
+        # an O(b/R) convention that does not vanish under refinement
+        # (Namics books the unreciprocated forward area): it moved
+        # tests/cylindrical_fjc_offset_mirror (GN 8e-4) and nothing else.
+        m_lo = off + 0.5 / fjc
+        lo_core = off > 0 and self.lowerbound == "surface"
+        lo_mirror = off > 0 and not lo_core
+        hi_surface = self.upperbound == "surface"
+        if lo_core and off < 0.5 - 1.0 / fjc - 1e-12:
+            # the first site's outermost inward bond has its midpoint face
+            # at r = off + 1/fjc - 1/2 < 0: behind the axis, where the area
+            # weight of a bond entering the core is undefined (negative on
+            # a cylinder)
+            raise NotImplementedError(
+                f"lat : lowerbound : surface with offset_first_layer {off} "
+                f"at FJC_choices {FJC}: the solid core is thinner than "
+                f"1/2 - 1/fjc = {0.5 - 1.0 / fjc:.6g} b, so refined bonds "
+                "from the first sites reach behind the axis through the "
+                "solid -- not yet ported to PySFBox. Use offset_first_layer "
+                f">= {0.5 - 1.0 / fjc:.6g}, offset_first_layer : 0 (no "
+                "core), or a lower FJC_choices (FJC_choices 5 takes any "
+                "offset)")
         for i in range(fjc, M - fjc):
+            k = i - fjc + 1                        # 1-based refined index
             r = off + (i - fjc + 1.0) / fjc
             rlow, rhigh = r - 0.5, r + 0.5
             if sph:
@@ -184,36 +291,30 @@ class Lattice1D:
             else:
                 L[i] = np.pi * (2.0 * r) / fjc
                 VL = 2.0 * r
-            edge = MX / fjc
-            # outermost channels (bond endpoints)
-            if fold_lo and i - fjc < fjc:          # lands in the lower ghosts
-                LAM[0, i] += c_ext * area(off + r - rlow) / VL
-            elif 2 * rlow - r > 0:
-                LAM[0, i] += c_ext * area(rlow) / VL
-            # the outer mirror sits at r = off + edge: the offset must enter
-            # both the test and the reflected distance (before 25 Sep 2026
-            # the outermost channel tested against `edge` alone, so any
-            # offset_first_layer > 0 with FJC_choices > 3 reflected that
-            # channel onto itself at EVERY site -- weights 1/8,1/4,3/8,1/4,0
-            # instead of 1/8,1/4,1/4,1/4,1/8; offset 0 was never affected)
-            if 2 * rhigh - r < off + edge:
-                LAM[FJC - 1, i] += c_ext * area(rhigh) / VL
-            else:                          # reflect off the outer mirror
-                self._reflect(LAM, FJC - 1, i, r, rhigh, off + edge, fjc,
-                              c_ext, VL, area)
-            # inner channels
-            for j in range(1, fjc):
-                rlow += 0.5 / fjc
-                rhigh -= 0.5 / fjc
-                if fold_lo and i + j - fjc < fjc:  # lands in the lower ghosts
-                    LAM[j, i] += c_mid * area(off + r - rlow) / VL
-                elif 2 * rlow - r > 0:
-                    LAM[j, i] += c_mid * area(rlow) / VL
-                if 2 * rhigh - r < off + edge:
-                    LAM[FJC - 1 - j, i] += c_mid * area(rhigh) / VL
+            for j in range(fjc):       # j = 0: the bond endpoints (C_ext)
+                if j:
+                    rlow += 0.5 / fjc
+                    rhigh -= 0.5 / fjc
+                coef = c_mid if j else c_ext
+                kt = k + j - fjc                       # inward channel j
+                if kt >= 1:                            # interior
+                    LAM[j, i] += coef * area(rlow) / VL
+                elif lo_mirror:                        # inner mirror fold
+                    LAM[j, i] += coef * area(min(rlow, 2.0 * m_lo - rlow)) / VL
+                elif lo_core:                          # absorbed by the core
+                    # max(): at off = 1/2 - 1/fjc the face sits on the axis
+                    LAM[j, i] += coef * area(max(rlow, 0.0)) / VL
+                # (offset 0: kt <= 0 ends on or behind the axis -- dropped)
+                kt = k + fjc - j                       # outward FJC-1-j
+                if kt <= MX or hi_surface:             # interior / absorbed
+                    LAM[FJC - 1 - j, i] += coef * area(rhigh) / VL
                 else:
+                    # the outer mirror sits at r = off + edge: the offset
+                    # enters the reflected distance (before 25 Sep 2026 it
+                    # did not, and every offset > 0 folded the outermost
+                    # channel onto the centre at EVERY site)
                     self._reflect(LAM, FJC - 1 - j, i, r, rhigh, off + edge,
-                                  fjc, c_mid, VL, area)
+                                  fjc, coef, VL, area)
             LAM[fjc, i] += 1.0 - LAM[:, i].sum()         # centre closes the row
         self.L, self.LAM = L, LAM
         # geometric volume in closed form. The offset enters in PHYSICAL
@@ -239,11 +340,118 @@ class Lattice1D:
         # — which is what Namics does (its theta_exc mixes the measures
         # the same way; intentional deviation, reported upstream).
         self.L_sum = float(L[self.iv].sum())
+        self._check_stencil()
+
+    def _check_stencil(self):
+        """Construction-time safety net for the refined CURVED stencil
+        (review 27 Oct 2026, #8): the one-step site average, ghost folds
+        included, must be a reversible (sub)probability average -- weights
+        T >= 0, rows summing to 1 (at most 1 next to a surface), and
+        L_n T_nm = L_m T_mn. T >= 0 is what keeps a positive Boltzmann
+        weight's propagator, and so phi, positive.
+
+        The folds only touch the first and last 2 fjc rows, so the folded
+        operator is built there column by column from the production code
+        path, site_average(set_bounds(e_m)), for the first and last
+        min(MX, 3 fjc) sites (O(fjc) averages); the rows in between have no
+        fold, their T row is the raw LAM column, checked directly. Note the
+        criterion is T, not LAM: a channel whose image is the site itself
+        folds onto the diagonal, so LAM[fjc] < 0 can be a valid T_kk >= 0.
+
+        EXEMPT (decided 28 Oct 2026): the offset-0 CYLINDER's axis rows.
+        Its windows straddle the axis with the signed measure VL = 2 r, and
+        at FJC_choices >= 11 the stay weight of the axis row is negative
+        (T00 = -0.075 at FJC 11, -0.725 at 21; Namics has the same rows,
+        and production cylindrical micelles use them).
+        The stencil is kept; the value is stored in self.axis_stay, a
+        once-per-process note says so, and System._audit_solution refuses
+        any phi < 0."""
+        fjc, MX, M, FJC = self.fjc, self.MX, self.M, self.FJC
+        L, LAM, iv = self.L, self.LAM, self.iv
+        Li = L[iv]
+        scale = float(np.max(Li[:, None] * np.abs(LAM[:, iv]).T))
+        where = (f"Lattice1D {self.geometry}, FJC_choices {FJC}, "
+                 f"offset_first_layer {self.offset:g}, lowerbound "
+                 f"{self.lowerbound}, upperbound {self.upperbound}")
+        # (1) direct channels between two interior sites: L-reciprocal
+        worst = 0.0
+        for c in range(FJC):
+            d = c - fjc
+            i = np.arange(fjc + max(0, -d), M - fjc - max(0, d))
+            a = L[i] * LAM[c, i]
+            b = L[i + d] * LAM[FJC - 1 - c, i + d]
+            worst = max(worst, float(np.max(np.abs(a - b), initial=0.0)))
+        # (2) the folded boundary blocks, column by column: B[a, b] =
+        # T[cols[a], cols[b]] (every row within 2 fjc of an end has its
+        # whole support inside cols)
+        K = min(MX, 3 * fjc)
+        cols = sorted(set(range(K)) | set(range(MX - K, MX)))
+        B = np.zeros((len(cols), len(cols)))
+        for jc, m in enumerate(cols):
+            e = np.zeros(M)
+            e[fjc + m] = 1.0
+            B[:, jc] = self.site_average(self.set_bounds(e))[iv][cols]
+        F = Li[cols][:, None] * B
+        worst = max(worst, float(np.max(np.abs(F - F.T))))
+        if worst > STENCIL_TOL * scale:
+            raise ValueError(
+                f"{where}: the refined stencil breaks detailed balance "
+                f"(L_n T_nm - L_m T_mn up to {worst / scale:.2e} of the "
+                "largest weight) -- a PySFBox defect, please report the input")
+        ones = np.zeros(M)
+        ones[iv] = 1.0
+        rows = self.site_average(self.set_bounds(ones))[iv]
+        # a surface absorbs: rows within 2 fjc of one sum to at most 1
+        absorbs = (((np.arange(MX) < 2 * fjc) & (self.lowerbound == "surface"))
+                   | ((np.arange(MX) >= MX - 2 * fjc)
+                      & (self.upperbound == "surface")))
+        need_one = ~absorbs
+        bad_row = (rows > 1.0 + STENCIL_TOL) | (
+            need_one & (np.abs(rows - 1.0) > STENCIL_TOL))
+        if np.any(bad_row):
+            n = int(np.argmax(bad_row))
+            raise ValueError(
+                f"{where}: the site average of a uniform profile is "
+                f"{rows[n]:.15g} at refined site {n + 1}, not 1 -- a PySFBox "
+                "defect, please report the input")
+        # (3) T >= 0: boundary rows from the columns, the rest from LAM
+        mid = np.ones(MX, dtype=bool)
+        mid[:min(MX, 2 * fjc)] = False
+        mid[max(0, MX - 2 * fjc):] = False
+        tmin = np.full(MX, np.inf)
+        tmin[cols] = B.min(axis=1)
+        if np.any(mid):
+            tmin[mid] = LAM[:, iv][:, mid].min(axis=0)
+        axis = self.geometry == "cylindrical" and self.offset == 0
+        neg = tmin < -STENCIL_TOL
+        if axis:                     # the exempt axis rows (docstring)
+            ax = neg & (np.arange(MX) < fjc)
+            if np.any(ax):
+                self.axis_stay = float(tmin[ax].min())
+                note = (f"the refined cylinder at FJC_choices {FJC} "
+                        "and offset_first_layer 0 has a negative stay "
+                        f"weight T00 = {self.axis_stay:.4g} on its axis row "
+                        "(Namics' lattice, kept); results are audited for "
+                        "phi >= 0")
+                if note not in _AXIS_NOTES:      # once per process
+                    _AXIS_NOTES.add(note)
+                    print(f"  note: {note}")
+            neg = neg & ~ax
+        if np.any(neg):
+            n = int(np.argmax(neg))
+            raise ValueError(
+                f"{where}: negative transition weight {tmin[n]:.3g} at "
+                f"refined site {n + 1} -- the site average is no longer a "
+                "probability average, and a sharp field there drives "
+                "densities negative. Increase offset_first_layer or lower "
+                "FJC_choices")
 
     @staticmethod
     def _reflect(LAM, c, i, r, rhigh, edge, fjc, coef, VL, area):
-        """Fold a bond that reaches past the outer mirror back into channel c
-        (Namics' else-branch: reflected radius rhigh - k/fjc)."""
+        """Fold a bond that reaches past the outer MIRROR back into channel c
+        (Namics' else-branch: reflected radius rhigh - k/fjc). Mirror only:
+        an outer surface absorbs the bond with its free-space area instead
+        (review 27 Oct 2026, #2; Namics folds for both bounds)."""
         d = 2 * rhigh - r - edge
         if -0.001 < d < 0.001:
             LAM[c, i] += coef * area(rhigh) / VL

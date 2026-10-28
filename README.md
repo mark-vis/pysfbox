@@ -52,7 +52,8 @@ the corrected physics where Namics has confirmed bugs (the fixed-potential
 Poisson factor 2, the refined-lattice bond length, the weak-charge
 free-energy/chemical-potential index terms, the fixed-potential electrode's
 field energy and work term, the free-energy term of states with different χ,
-the `critical_ratio` composition) or where a Namics output column is not the
+the `critical_ratio` composition, the refined curved lattice's axis bonds and
+`surface` walls) or where a Namics output column is not the
 quantity its name promises (`Laplace_pressure` is the two-sided pressure
 difference; moments of a vanishing excess print `nan`) — each noted in the
 relevant section below. Inputs that Namics refuses, and a few it accepts but
@@ -234,8 +235,9 @@ converges via the extended rescue and matches the compiled Namics exactly.
 Genuine non-convergence still fails *gracefully* (a clear "no convergence"
 message with actionable advice, never a wrong number), and a converged
 state is audited before it is written out: one whose restricted amounts,
-bulk composition, incompressibility or electroneutrality do not add up is
-refused with an `input audit` error (see REFERENCE.md). `var` scans
+bulk composition, incompressibility or electroneutrality do not add up, or
+with a negative density, is refused with an `input audit` error (see
+REFERENCE.md). `var` scans
 warm-start each step from the previous solution — ramping a parameter
 (e.g. a co-solvent) is the intended way into hard regimes.
 

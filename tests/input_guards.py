@@ -14,7 +14,9 @@ neutralizer bulk, [30] bound values + wrong-dimension keys, [31] lambda at
 fjc>1/N-D, [36] 1-D range bounds, [46] micro/bate blocks, [59] mol
 freedom/amount, [61] unused state chi, [71] UTF-8 BOM, [84] mu : 0,
 [45] var scan validation, [53] one target per var block; [X] the
-characteristic-function parse errors and compute_kJ0 (9 Oct 2026).
+characteristic-function parse errors and compute_kJ0 (9 Oct 2026);
+[27 Oct #9/#26/#41] curved offsets (a solid core thinner than 1/2 - 1/fjc,
+negative offsets) and the lambda range (28 Oct 2026).
 """
 import contextlib
 import io
@@ -358,6 +360,35 @@ var : lat-flat : end_value : 19
 except ValueError as e:
     check("fractional n_layers scan step raises",
           "whole number of layers" in str(e), str(e))
+
+print("[27 Oct #9/#26/#41] curved offsets and lambda on the 1-gradient lattice")
+CYL = sub(WALL, "geometry : planar", "geometry : cylindrical")
+SPH = sub(WALL, "geometry : planar", "geometry : spherical")
+for geo, text in (("cylindrical", CYL), ("spherical", SPH)):
+    raises(f"{geo} FJC 11 solid core at offset 0.05 (thinner than "
+           "1/2 - 1/fjc)", text + "lat : flat : FJC_choices : 11\n"
+           "lat : flat : offset_first_layer : 0.05\n", NotImplementedError,
+           ["offset_first_layer", "1/2 - 1/fjc"])
+    builds(f"{geo} FJC 11 solid core at offset 0.3 (= 1/2 - 1/fjc)",
+           text + "lat : flat : FJC_choices : 11\n"
+           "lat : flat : offset_first_layer : 0.3\n")
+for geo, text, extra in (("cylindrical", CYL, ""), ("spherical", SPH, ""),
+                         ("cylindrical FJC 5", CYL,
+                          "lat : flat : FJC_choices : 5\n")):
+    for off in ("-1", "-0.5", "-0.3"):
+        raises(f"negative offset_first_layer {off} on {geo}",
+               text + extra + f"lat : flat : offset_first_layer : {off}\n",
+               ValueError, ["offset_first_layer", "non-negative"])
+builds("planar ignores a negative offset_first_layer",
+       WALL + "lat : flat : offset_first_layer : -1\n")
+for text, lam in ((WALL, "0.55"), (WALL, "-0.1"), (WALL, "0"),
+                  (SPH, "0.45"), (CYL, "0.55")):
+    raises(f"lambda {lam} ({text.split('geometry : ')[1].split()[0]})",
+           text + f"lat : flat : lambda : {lam}\n", ValueError,
+           ["lat : lambda", "1/3"])
+builds("lambda 1/3 on a sphere at offset 0 (stay weight exactly 0)",
+       SPH + "lat : flat : lambda : 0.3333333333333333\n")
+builds("lambda 0.5 planar", WALL + "lat : flat : lambda : 0.5\n")
 
 print("[X] the Namics characteristic function (sys : X) and compute_kJ0")
 WEAK = (WALL.replace("mon : A : chi_S : -1.5\n", "")
