@@ -24,8 +24,12 @@ loss -- is tests/mass_accounting_guard.py.
    site, its segment split untouched), electroneutrality (a
    NON-conservative Poisson stencil: the outer face radii of a charged
    cylinder scaled by 1.001 -- the solve converges, the box is not neutral
-   -- and an electrode charge booked off by 1e-6). Each must raise the
-   right InputAuditError subclass naming the check and the culprit.
+   -- and an electrode charge booked off by 1e-6), non-negative density
+   (one molecule's phi -1e-6 at one site; and on the refined cylinder at
+   offset 0, FJC_choices 11 -- the one lattice with a negative stay
+   weight, its axis row -- a real solved state passes and an injected
+   negative density names the axis cause). Each must raise the right
+   InputAuditError subclass naming the check and the culprit.
 3. THRESHOLDS: amounts at rtol 1e-8 (1e-6 raises, 1e-10 passes); the
    incompressibility bound passes at 0.5 max|g|.
 4. RUNNER: an InputAuditError is re-raised, not retried.
@@ -51,7 +55,8 @@ import pysfbox.runner as runner_mod               # noqa: E402
 from pysfbox.inputreader import read_input        # noqa: E402
 from pysfbox.runner import _newton_options        # noqa: E402
 from pysfbox.system import (InputAuditError,      # noqa: E402
-                            MassAccountingError, System)
+                            MassAccountingError, NegativeDensityError,
+                            System)
 
 failures = 0
 
@@ -183,6 +188,62 @@ m.phi[free[5]] -= 0.5 * gmax
 silent("incompressibility: deviation 0.5 max|g| passes",
        lambda: s._audit_solution(g))
 m.phi = phi0
+
+# non-negative density (runs before incompressibility, which would fire too)
+m.phi = phi0.copy()
+m.phi[free[5]] = -1e-6
+expect("non-negative density: mol phi -1e-6 at one free site",
+       lambda: s._audit_solution(g), NegativeDensityError,
+       "[non-negative density]", "mol water", f"site {free[5]}",
+       "PySFBox defect")
+m.phi[free[5]] = -1e-14 * float(np.max(phi0))
+silent("non-negative density: -1e-14 of the maximum passes (rounding)",
+       lambda: s._audit_positivity())
+m.phi = phi0
+# the refined cylinder at offset 0, FJC_choices 11: the one lattice whose
+# axis row has a negative stay weight (Lattice1D._check_stencil exempts it,
+# lat.axis_stay); a real micelle-like state is positive and passes, an
+# injected negative density names the axis as the cause
+AXIS_IN = """lat : NN : n_layers : 8
+lat : NN : geometry : cylindrical
+lat : NN : lattice_type : hexagonal
+lat : NN : FJC_choices : 11
+mon : W : freedom : free
+mon : A : freedom : free
+mon : P : freedom : pinned
+mon : P : pinned_range : 1;1
+mon : A : chi_W : 0.8
+mon : P : chi_W : 1.5
+mol : solvent : freedom : solvent
+mol : solvent : composition : (W)1
+mol : poly : freedom : restricted
+mol : poly : composition : (P)2(A)10
+mol : poly : theta : 12
+newton : NN : tolerance : 1e-9
+start
+"""
+with tempfile.TemporaryDirectory() as tmp:
+    path = os.path.join(tmp, "cyl_axis.in")
+    with open(path, "w") as f:
+        f.write(AXIS_IN)
+    settings = read_input(path)[0]
+    sa = System(settings)
+    xa, _, _ = sa.solve(**_newton_options(settings))
+ga = g_at(sa, xa)
+check("cyl FJC 11 offset 0: axis_stay set, the solved state passes",
+      sa.lat.axis_stay is not None and abs(sa.lat.axis_stay + 0.075) < 1e-12
+      and min(float(np.min(mm.phi[sa.lat.iv]))
+              for mm in sa.molecules.values()) >= 0)
+silent("cyl FJC 11 offset 0: audit silent", lambda: sa._audit_solution(ga))
+mp = sa.molecules["solvent"]        # (the restricted poly's theta check
+p0 = mp.phi.copy()                  # would fire first)
+mp.phi = p0.copy()
+mp.phi[sa.lat.fjc + 2] = -1e-3
+expect("non-negative density on the axis lattice names the cause",
+       lambda: sa._audit_solution(ga), NegativeDensityError,
+       "[non-negative density]", "mol solvent", "FJC_choices 11",
+       "T00 = -0.075", "Lower FJC_choices", "offset_first_layer > 0")
+mp.phi = p0
 
 # segment amount on a branched molecule (the tree's per-type shares)
 s, x = STATES["branched_star.in"]

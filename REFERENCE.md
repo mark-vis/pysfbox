@@ -230,7 +230,13 @@ smaller cell or more salt helps.
   - *electroneutrality* (charged systems): the box, including any fixed
     and frozen charges and the charge a fixed-ψ0 electrode takes up, is
     neutral to the bound the converged Poisson rows imply (exact for a
-    flux-conservative stencil with the mirror ψ boundaries).
+    flux-conservative stencil with the mirror ψ boundaries);
+  - *non-negative density*: every molecule's φ ≥ 0 on the free sites (to
+    1e-12 of its maximum). Automatic for a stencil with non-negative
+    weights; the one accepted exception is the refined cylinder at
+    `offset_first_layer : 0` with `FJC_choices` ≥ 11 (see
+    `offset_first_layer`), where a field that changes sharply next to the
+    axis could drive φ negative.
 
 Convergence quality is also visible in the run log, which prints
 `converged in <it> iterations, max|g| = …, max|phi_T-1| = …` per calculation.
@@ -258,10 +264,10 @@ lat : L : n_layers : 100
 | `gradients` | `1`, `2`, `3` | `1` | number of spatial gradients; selects the 1-gradient `Lattice1D` or the N-gradient `LatticeND`. Any other value raises. |
 | `geometry` | see tables below | `planar` (1D) / `flat` (N-D) | coordinate system. `flat` and `planar` are synonyms. |
 | `lattice_type` | `simple_cubic`, `hexagonal` | `simple_cubic` | sets the neighbour-transition weight λ (`simple_cubic` → 1/6, `hexagonal` → 1/4). N-D accepts `simple_cubic` only. |
-| `lambda` | real in (0, ½) | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). Honoured on the 1-gradient lattice at `FJC_choices 3` only; with `FJC_choices > 3` or `gradients > 1` (whose stencils have no λ to replace) it raises. |
+| `lambda` | real, 0 < λ ≤ ½ | *(from `lattice_type`)* | explicit a-priori step weight λ₁, overriding `lattice_type` (e.g. `lambda : 0.3333` for a 1/3–1/3–1/3 lattice). Honoured on the 1-gradient lattice at `FJC_choices 3` only; with `FJC_choices > 3` or `gradients > 1` (whose stencils have no λ to replace) it raises. A λ that leaves a negative or zero step weight in any layer raises `ValueError` (since 28 Oct 2026; before, the walk was no random walk and densities could leave [0, 1] with a converged status): 0 < λ ≤ ½ on planar and cylindrical lattices, λ ≤ 1/3 on a sphere at `offset_first_layer : 0` (its first layer keeps 1 − 3λ), in between at a positive offset. |
 | `n_layers` | integer | *(required, 1D)* | number of physical layers z = 1..n_layers (see FJC refinement). Missing or non-integral raises (e.g. an alias expression giving 20.5; a value is never truncated). |
 | `FJC_choices` | `3`, `5`, `7`, … | `3` | lattice refinement (freely-jointed-chain sub-layers). `3` = unrefined (fjc = 1). |
-| `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries; **ignored on planar lattices**, as in Namics — it no longer shifts the planar `.pro` x column), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. With a `mirror` lowerbound the inner mirror at r = offset folds the refined inward bonds symmetrically (since 7 Oct 2026; before, they broke detailed balance: θ of a restricted brush missed its input and GN/μ/F depended on the chain orientation). |
+| `offset_first_layer` | float ≥ 0 | `0.0` | radial offset of the first layer from the axis/centre (curved geometries; **ignored on planar lattices**, as in Namics — it no longer shifts the planar `.pro` x column), in **physical bond units** — also when combined with `FJC_choices` > 3 (shell placement and closed-form volume agree since 21 Aug 2026). Mind that the compiled Namics places its refined shells at **fjc× the declared offset** (its own volume formula and `.pro` coordinates disagree with its lambdas; reported upstream), so at `offset_first_layer > 0` with fjc > 1 the two engines solve *different geometries*. With a `mirror` lowerbound the inner mirror folds the refined inward bonds back with, for each bond and its mirror image, the smaller of their two free-space face areas (since 28 Oct 2026): detailed balance holds and no folded weight exceeds its free-space value, so the site average stays a probability average. The 7 Oct 2026 rule (the face midway between site and image) was reciprocal too, but went negative at small offsets (a stay weight of −0.19 for a sphere at `FJC_choices : 11`, offset 0.5), and a sharp field there could give φ < 0; before 7 Oct the bonds broke detailed balance (θ of a restricted brush missed its input, GN/μ/F depended on the chain orientation). The fold is an O(b/R) convention that does not vanish under refinement (Namics books the unreciprocated forward weight). Every refined curved lattice is checked when it is built: a negative transition weight or a broken detailed balance raises `ValueError` (with the fold above this is left for a sphere at `FJC_choices` ≥ 35 and offsets below about 0.01). One case is accepted with a note: a cylinder at `offset_first_layer : 0` and `FJC_choices` ≥ 11 has a negative stay weight on its axis row (−0.075 at 11, −0.725 at 21; the same rows as Namics), and every converged state is then audited for φ ≥ 0 (a negative density raises; remedy `FJC_choices` ≤ 9 or `offset_first_layer` > 0). With a `surface` lowerbound the solid core r < offset absorbs every refined bond that enters it with the bond's free-space weight (since 28 Oct 2026; before, at 0 < offset < 1 a bond landing behind the axis went back to the stay channel, so wall observables jumped at every offset 1 − k/fjc); a core thinner than 1/2 − 1/fjc bond lengths (0.3 at `FJC_choices : 11`; `FJC_choices : 5` takes any offset) raises `NotImplementedError`. A negative value on a curved lattice raises (since 28 Oct 2026; Namics resets it to 0 with a message). At offset 0 the refined curved stencil decides which bonds end on the axis on the integer site index (since 28 Oct 2026; before, a float round-off kept the bond that ends exactly on the axis at `FJC_choices` 11, 19, 23, 25, 27, 35, 37, 41, 43, … (an irregular set), which broke detailed balance: free molecules were off by 1e-5–3e-4, results depended on the chain orientation, and a restricted molecule lost mass — silently before v1.4.3, refused by the input audit's restricted-amount check since; Namics has the same round-off). |
 | `bondlength` | float in 1e-12..1e-8 (m) | `5e-10` | segment bond length; **only consumed by charged systems** (Poisson prefactor). Out-of-range raises. |
 | `Markov` | `1` | `1` | chain statistics: `1` = fully flexible. |
 
@@ -353,7 +359,14 @@ same physics and warns once.
 - `mirror`: reflect the interior into the ghost layer (zero-flux wall).
 - `surface`: the ghost is a solid/impenetrable wall (density 0 for
   propagators). Frozen surface segments (`mon : S : freedom : frozen`) pin the
-  ghost density explicitly.
+  ghost density explicitly. On refined curved lattices (`FJC_choices` > 3) a
+  bond that reaches into a surface is absorbed with its free-space weight, so
+  a `surface` upper bound equals a frozen shell on a larger `mirror` box
+  (since 28 Oct 2026; before, it was weighted like a mirror fold, and a
+  concave outer wall absorbed less than a planar one: Ω 5 % off on a
+  spherical and 20 % on a cylindrical pore at `FJC_choices : 11`). The
+  compiled Namics folds it like a mirror, so on that input class the two
+  engines disagree by design.
 
 Any other value raises. Namics' 1-gradient `periodic` (the repeat unit of a
 lamellar stack) is not yet ported and raises `NotImplementedError`; the same
