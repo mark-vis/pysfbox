@@ -736,7 +736,9 @@ class System:
                 # the FH critical composition of an A/B pair: phi_A/phi_B =
                 # sqrt(N_B/N_A) (f''' = 0). Namics (system.cpp:899-901) uses
                 # sqrt(N_A/N_B) -- the inverse; deliberate deviation (review
-                # 6 Oct 2026, #74)
+                # 6 Oct 2026, #74). Do NOT revert in a Namics re-sync:
+                # tests/delta_critical_ratio.in guards it (the inverse flips
+                # the sign of the pinned phi_A - phi_B)
                 molA, molB = self.delta_molecules
                 self.phi_ratio = float(np.sqrt(molB.N / molA.N))
             else:

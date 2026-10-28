@@ -1,0 +1,49 @@
+// GUARD for review fix #74 (7 Oct 2026; guard added after the review of
+// 27 Oct 2026): `phi_ratio : critical_ratio` is the Flory-Huggins critical
+// composition phi_A/phi_B = sqrt(N_B/N_A) of the delta_molecules pair
+// (f''' = 0 for the binary blend). Namics uses the inverse sqrt(N_A/N_B),
+// so this case DEVIATES from the oracle by design, and
+// a Namics re-sync (or an A/B swap of delta_molecules) must turn it red.
+// (A)100 restricted + (B)10 solvent, chi_AB 0.3, planar mirror box:
+// start 1 nucleates an A slab (pinned 1..30), start 2 releases it, start 3
+// pins the composition at layer 30 to the critical ratio. Expected and
+// measured at creation (28 Oct 2026): kal phi_ratio = sqrt(10/100) =
+// 0.316228, and in the start-3 profile phi_A - phi_B at layer 30 =
+// (r-1)/(r+1) = -0.5194938533 (pro: -0.5194938539). With the inverted
+// ratio (explicit phi_ratio : 3.16227766) the pinned difference flips to
+// +0.519 and the .pro fails by orders of magnitude. theta_A 20, not 30: a
+// fully filled pinned slab diverges on release. The phi_ratio column is NiN
+// (with a warning) on the two starts without the constraint.
+lat : NN : n_layers : 60
+lat : NN : geometry : planar
+lat : NN : lowerbound : mirror
+lat : NN : upperbound : mirror
+
+mon : A : freedom : pinned
+mon : A : pinned_range : 1;30
+mon : B : freedom : free
+mon : A : chi_B : 0.3
+
+mol : A : composition : (A)100
+mol : A : freedom : restricted
+mol : A : theta : 20
+mol : B : composition : (B)10
+mol : B : freedom : solvent
+
+newton : n : tolerance : 1e-9
+
+output : kal : append : false
+kal : mol : A : theta
+kal : sys : NN : phi_ratio
+kal : sys : NN : grand_potential
+output : pro : append : false
+pro : mol : A : phi
+pro : mol : B : phi
+start
+mon : A : freedom : free
+start
+sys : NN : constraint : delta
+sys : NN : delta_molecules : A;B
+sys : NN : delta_range : (30)
+sys : NN : phi_ratio : critical_ratio
+start
