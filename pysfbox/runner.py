@@ -657,31 +657,56 @@ def _regula_falsi(resid, x_start, tol, deltamax, itlimit, verbose, label):
         "or give a better initial value")
 
 
-def _remap_layers(x_old, n_seg, M_old, M_new):
+def _grid_shape(lat):
+    """The padded grid of a lattice as a shape tuple: `LatticeND.pdims`
+    (C-order storage, one ghost layer on both ends of every axis), or (M,)
+    for the 1-gradient `Lattice1D`. Two lattices with the same M but a
+    different shape (an N-D axis swap) do NOT share a grid."""
+    pdims = getattr(lat, "pdims", None)
+    return tuple(pdims) if pdims else (lat.M,)
+
+
+def _remap_layers(x_old, shape_old, shape_new):
     """Adapt a converged potential stack to a changed layer count, as an
     initial guess only: keep the lower-wall half from the lower end and the
     upper-wall half from the upper end (so both surface regions survive a
     two-wall compression), pad the middle with u = 0 (bulk) when growing.
     Works in refined (fjc-internal) units since M includes the ghosts.
 
+    `shape_old` / `shape_new` are the padded grids (`_grid_shape`): (M,) on
+    a 1-gradient lattice, `pdims` on LatticeND. The two-wall rule is applied
+    PER AXIS, so every kept cell stays at its lattice coordinate. Before
+    v1.4.4 an N-D block was split as one flat 1-D column, which sheared the
+    seed across the box whenever an inner axis changed (an n_layers_y scan
+    converged a droplet onto the two-half-droplet branch, 0.68 kT higher,
+    with no note). On (M,) the rule is the historical 1-D split, bit for
+    bit.
+
     The iteration vector is a stack of equal-length (M) blocks: one potential
     field per iteration species, plus a trailing psi block when the system is
     CHARGED (system.n_var adds one more M). All blocks are spatial profiles, so
     every block -- u fields AND psi -- is remapped the same way; the number of
-    blocks is inferred from the vector length (n_seg is only a hint, and would
-    miss the psi block for charged/weak systems -- the bug this guards). Returns
-    None if the length is not an integer number of M-blocks, so the caller
-    falls back to a cold start rather than crashing."""
-    if M_old <= 0 or x_old.size % M_old != 0:
+    blocks is inferred from the vector length (it would miss the psi block
+    for charged/weak systems if taken from the species count). Returns None
+    if the length is not an integer number of M-blocks, or the grids differ
+    in dimension, so the caller falls back to a cold start rather than
+    crashing."""
+    shape_old, shape_new = tuple(shape_old), tuple(shape_new)
+    M_old = int(np.prod(shape_old))
+    if (M_old <= 0 or x_old.size % M_old != 0
+            or len(shape_old) != len(shape_new)):
         return None
     n_blocks = x_old.size // M_old
-    Xo = x_old.reshape(n_blocks, M_old)
-    Xn = np.zeros((n_blocks, M_new))
-    k = min(M_old, M_new)
-    lo = k // 2
-    hi = k - lo
-    Xn[:, :lo] = Xo[:, :lo]
-    Xn[:, M_new - hi:] = Xo[:, M_old - hi:]
+    Xo = x_old.reshape((n_blocks,) + shape_old)
+    Xn = np.zeros((n_blocks,) + shape_new)
+    src, dst = [np.arange(n_blocks)], [np.arange(n_blocks)]
+    for m_old, m_new in zip(shape_old, shape_new):
+        k = min(m_old, m_new)
+        lo = k // 2
+        hi = k - lo
+        src.append(np.r_[0:lo, m_old - hi:m_old])
+        dst.append(np.r_[0:lo, m_new - hi:m_new])
+    Xn[np.ix_(*dst)] = Xo[np.ix_(*src)]
     return Xn.ravel()
 
 
@@ -715,6 +740,80 @@ def _seed_by_species(x_old, sys_old, sys_new):
     return np.concatenate(parts)
 
 
+def _warm_seed(x_prev, sys_old, sys_new, x_before=None):
+    """The warm seed for `sys_new` from `x_prev`, the converged solution of
+    `sys_old` (the previous scan step or start). Initial-guess only: it
+    cannot change what a converged solution satisfies.
+
+      - FJC_choices changed          -> None (cold; different structure)
+      - species changed, same grid   -> `_seed_by_species` (copy by name)
+      - same species, grid changed   -> `_remap_layers` per axis (n_layers,
+                                        n_layers_x/y/z, or an N-D reshape
+                                        at the same M)
+      - same grid, layout changed    -> `_seed_by_species` (psi / beta
+                                        toggled: each block by name; the
+                                        old tail append/truncate moved the
+                                        beta block into psi when charge
+                                        toggled under a delta constraint)
+      - same grid and layout         -> x_prev, or the secant prediction
+                                        2 x_prev - x_before when the caller
+                                        passes the step before (`x_before`)
+    Returns (seed, plain, note): `plain` is True only when the seed is
+    x_prev's own layout on the same grid (a secant prediction across steps
+    is valid only then); `note` explains a COLD seed (seed None) for the
+    caller to print."""
+    if x_prev is None or sys_old is None:
+        return None, False, None
+    if sys_new.lat.fjc != sys_old.lat.fjc:
+        return None, False, ("FJC_choices changed -- starting COLD (no warm "
+                             "seed across a lattice refinement change)")
+    nv = sys_new.n_var()
+    shape_old, shape_new = _grid_shape(sys_old.lat), _grid_shape(sys_new.lat)
+    same_grid = shape_old == shape_new
+    seg_old = tuple(s.name for s in sys_old.it_species)
+    seg_new = tuple(s.name for s in sys_new.it_species)
+    plain, note = False, None
+    if seg_new != seg_old:
+        # the iteration-species list changed (a species added or removed):
+        # warm by NAME on the same grid, else say so
+        seed = (_seed_by_species(x_prev, sys_old, sys_new)
+                if same_grid else None)
+        if seed is None:
+            note = ("the iteration species AND the grid changed -- "
+                    "starting COLD; a symmetry-broken previous state may "
+                    "not survive (change one at a time to keep the warm "
+                    "start)" if not same_grid else
+                    "the iteration species changed and the previous "
+                    "solution's layout could not be matched -- starting "
+                    "COLD; check the output for a branch change")
+    elif not same_grid:
+        seed = _remap_layers(x_prev, shape_old, shape_new)
+        if seed is None or seed.size != nv:
+            # never cold-start silently (review 6 Oct 2026, #26): say so,
+            # a branch change may follow
+            seed = None
+            note = ("n_layers changed together with the unknowns' layout "
+                    "-- starting COLD; check the output for a branch "
+                    "change (change one at a time to keep the warm start)")
+    elif x_prev.size != nv:
+        # same grid and species, but a block appeared or disappeared (psi
+        # and beta can each toggle between starts). Load-bearing for the
+        # nucleation-barrier workflow: start 1 nucleates a droplet via a
+        # pinned mon, start 2 releases it and adds the constraint -- a cold
+        # restart there would find the uniform solution instead.
+        seed = _seed_by_species(x_prev, sys_old, sys_new)
+        if seed is None or seed.size != nv:
+            seed = None
+            note = ("the unknowns' layout changed in a way the previous "
+                    "solution cannot be mapped onto -- starting COLD; "
+                    "check the output for a branch change")
+    else:
+        seed, plain = x_prev, True
+        if x_before is not None and x_before.size == x_prev.size:
+            seed = 2.0 * x_prev - x_before
+    return seed, plain, note
+
+
 def run_file(path, verbose=True):
     """Run all calculations in a Namics input file; writes .kal/.pro next
     to the input file. Returns the last System (for interactive use)."""
@@ -741,7 +840,6 @@ def run_file(path, verbose=True):
     # solution satisfies.
     x_prev = None
     x_scan_prev = None          # solution of the step before x_prev, same scan
-    seg_prev, M_prev, fjc_prev = None, 0, 0
     search_carry = {}           # search tuple -> root found in a prior start
     structure_prev = {}         # mol name -> max|phi - phibulk| of last state
     # ONE .kal column list for the whole file, from the final accumulated
@@ -822,60 +920,15 @@ def run_file(path, verbose=True):
 
             system_prev_step = system     # previous step's/start's System
             system = System(settings)
-            seg_now = tuple(s.name for s in system.it_species)
-            M_now, fjc_now = system.lat.M, system.lat.fjc
-            if x_prev is None:
-                seed = None
-            elif fjc_now != fjc_prev:
-                seed = None                   # different problem structure
-                x_scan_prev = None
-                print(f"start {start_i}{tag}: FJC_choices changed -- "
-                      "starting COLD (no warm seed across a lattice "
-                      "refinement change)")
-            elif seg_now != seg_prev:
-                # the iteration-species list changed (a species added or
-                # removed): warm by NAME on the same grid, else say so
-                seed = (_seed_by_species(x_prev, system_prev_step, system)
-                        if M_now == M_prev else None)
-                x_scan_prev = None
-                if seed is None:
-                    print(f"start {start_i}{tag}: the iteration species "
-                          "AND the grid changed -- starting COLD; a "
-                          "symmetry-broken previous state may not survive "
-                          "(change one at a time to keep the warm start)")
-            elif x_prev.size != system.n_var():
-                if M_now == M_prev:
-                    # same grid and species, but a trailing block appeared or
-                    # disappeared (a delta constraint toggled between starts;
-                    # block order: species, psi, beta -- only the TAIL can
-                    # change when seg/M/fjc are equal). Keep the potential
-                    # blocks warm and zero-seed the new tail (beta = 0 is the
-                    # cold value). Load-bearing for the nucleation-barrier
-                    # workflow: start 1 nucleates a droplet via a pinned mon,
-                    # start 2 releases it and adds the constraint -- a cold
-                    # restart there would find the uniform solution instead.
-                    nv = system.n_var()
-                    seed = (np.concatenate([x_prev,
-                                            np.zeros(nv - x_prev.size)])
-                            if x_prev.size < nv else x_prev[:nv].copy())
-                else:
-                    seed = _remap_layers(x_prev, len(seg_now), M_prev, M_now)
-                    if seed is not None and seed.size != system.n_var():
-                        seed = None
-                    if seed is None:
-                        # never cold-start silently (review 6 Oct 2026,
-                        # #26): say so, a branch change may follow
-                        print(f"start {start_i}{tag}: n_layers changed "
-                              "together with the unknowns' layout -- "
-                              "starting COLD; check the output for a "
-                              "branch change (change one at a time to keep "
-                              "the warm start)")
-                x_scan_prev = None
-            else:
-                seed = x_prev
-                if (has_var and subl >= 2 and x_scan_prev is not None
-                        and x_scan_prev.size == x_prev.size):
-                    seed = 2.0 * x_prev - x_scan_prev
+            # the warm seed (`_warm_seed`): x_prev reused when nothing
+            # structural changed, else remapped / copied by name / cold
+            # with a printed note. Within one var scan, from the third step
+            # on, a secant extrapolation predicts parameter-ramp steps.
+            x_before = x_scan_prev if (has_var and subl >= 2) else None
+            seed, seed_plain, note = _warm_seed(x_prev, system_prev_step,
+                                                system, x_before)
+            if note:
+                print(f"start {start_i}{tag}: {note}")
             if seed is None and start_i == 1 and subl == 0:
                 # analytic initial guess (sys : initial_guess : ...), applied
                 # to the first calculation only, exactly like Namics
@@ -923,9 +976,11 @@ def run_file(path, verbose=True):
                     print(f"start {start_i}{tag}: search "
                           f"{search[1]}:{search[2]} -> {x_root:.6g} "
                           f"in {super_it} super-iterations")
-            x_scan_prev = x_prev if has_var else None
+            # a secant prediction needs x_{k-1} and x_k on one grid and
+            # layout: only a step seeded plainly from x_prev qualifies (an
+            # N-D reshape at the same M kept the size and used to pass)
+            x_scan_prev = x_prev if (has_var and seed_plain) else None
             x_prev = x
-            seg_prev, M_prev, fjc_prev = seg_now, M_now, fjc_now
             if verbose:
                 phit_dev = np.abs(system.phitot * system.ksam
                                   + (1 - system.ksam) - 1).max()

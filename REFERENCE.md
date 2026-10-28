@@ -153,9 +153,14 @@ and no method guarantees convergence. The most effective tool is a
 starts from the previous converged solution, so ramping a hard parameter (a
 co-solvent, chi, wall separation) gently into a stiff regime is the documented
 way in. When only `n_layers` changes, the previous potentials are remapped onto
-the new grid; when a start adds or removes a species on the same grid, the
+the new grid; on 2-D/3-D lattices (`n_layers_x/y/z`, or a box whose axes are
+swapped at the same total size) the lower-wall and upper-wall halves are kept
+separately along every axis, so each kept cell stays at its lattice
+coordinate. When a start adds or removes a species on the same grid, the
 potentials are copied by species name and the new species start at u = 0
-(Namics does the same). A start that cannot be warm-started (the grid AND the
+(Namics does the same); when the electrostatic potential or a `delta`
+constraint is switched on or off, every other block keeps its value and the
+new one starts at 0. A start that cannot be warm-started (the grid AND the
 unknowns' layout changed together, or `FJC_choices` changed) says so and starts
 cold. Large cells converge more easily from below: if a cold start of a
 big box stalls (e.g. a large sphere around a long charged chain at low
@@ -1443,7 +1448,8 @@ var : mol-poly : end_value : 100
   `.pro` files are numbered by step index, not renamed).
 - Any settings key/name can be scanned (`set_value` writes it back before each
   rebuild). Each scan step is **warm-started** from the previous converged
-  solution; `n_layers` scans additionally remap the potential onto the new grid.
+  solution; `n_layers` scans additionally remap the potential onto the new grid
+  (per axis on 2-D/3-D lattices).
   One `.kal` row is written per step; `.pro` files are numbered like Namics.
 
 ### Scanning an alias
