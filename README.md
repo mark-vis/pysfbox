@@ -63,7 +63,8 @@ solves wrongly, raise with an explanation instead of running.
 
 - **Input**: the Namics `key : name : parameter : value` format, `//`
   comments, `start` blocks (settings accumulate, like Namics), `alias`
-  (`#N#` substitution), and `var` parameter scans (`scan`/`step`/`end_value`),
+  (`#N#` substitution in compositions, `n_layers`, and `sys`/`newton`
+  values), and `var` parameter scans (`scan`/`step`/`end_value`),
   including alias scans (`scan : N-value`).
 - **Lattice**: one, **two, or three gradient directions** (`gradients : 1/2/3`),
   as in Namics. 1-gradient: planar, cylindrical, spherical, `simple_cubic`

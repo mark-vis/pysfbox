@@ -96,7 +96,10 @@ def _layer_count(text, key):
     used to give 28, and a sub-layer scan step (`step : -0.5`) solved the
     9.5-layer rung as the 9-layer box and labelled it 9."""
     if text is None:
-        raise ValueError(f"lat : {key} is required")
+        raise ValueError(
+            f"lat : {key} is required"
+            + (" (a 1-gradient lattice; gradients : 2/3 read n_layers_x/y/z)"
+               if key == "n_layers" else ""))
     v = float(text)
     if v != int(v) or v < 1:
         raise ValueError(
@@ -106,6 +109,17 @@ def _layer_count(text, key):
                if key == "n_layers" else
                " (an N-D box size is a whole number of layers)"))
     return int(v)
+
+
+def _sys_last(settings, param, default=None):
+    """The last value of a `sys` parameter over every sys block, with `#X#`
+    aliases substituted (review 27 Oct 2026, #57: sys values were a block
+    the aliases did not reach)."""
+    v = default
+    for _, params in get_blocks(settings, "sys"):
+        v = last(params, param, v)
+    return substitute_aliases(v, settings) if isinstance(v, str) else v
+
 
 # physical constants for electrostatics, copied VERBATIM from Namics
 # (namics.cpp:45-49) so converged charged states agree with the oracle
@@ -461,7 +475,14 @@ class System:
         # ---- molecules ---------------------------------------------------
         self.molecules = {}
         for name, params in get_blocks(settings, "mol"):
-            comp = substitute_aliases(last(params, "composition"), settings)
+            raw = last(params, "composition")
+            if raw is None:
+                # used to be a bare TypeError from substitute_aliases
+                # (review 27 Oct 2026, #56)
+                raise ValueError(
+                    f"mol {name}: composition is required, e.g. 'mol : "
+                    f"{name} : composition : (A)100'")
+            comp = substitute_aliases(raw, settings)
             self.molecules[name] = Molecule(name, params, self.segments,
                                             lat, comp)
         if not self.molecules:
@@ -699,10 +720,7 @@ class System:
         # example nucleation_barrier.in) fixes a free molecule's phibulk
         # and walks delta_range to map Omega(R) away from equilibrium.
         def sys_last(param, default=None):
-            v = default
-            for _, params in get_blocks(settings, "sys"):
-                v = last(params, param, v)
-            return v
+            return _sys_last(settings, param, default)
 
         constraint = sys_last("constraint")
         self.constraintfields = constraint is not None
@@ -2206,9 +2224,7 @@ class System:
         for previous_result/none. The runner applies this to the FIRST
         calculation only, exactly like Namics (start == 1, then the type
         resets to previous_result)."""
-        kind = None
-        for _, params in get_blocks(self.settings, "sys"):
-            kind = last(params, "initial_guess", kind)
+        kind = _sys_last(self.settings, "initial_guess")
         if kind in (None, "previous_result", "none"):
             return None
         if kind not in ("polymer_adsorption", "membrane", "micelle"):

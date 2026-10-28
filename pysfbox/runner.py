@@ -27,6 +27,33 @@ def _num(s):
         return None
 
 
+_NEWTON_NOTES = set()       # once-per-process unparseable newton values
+
+
+def _newton_num(settings, block, params, key):
+    """A numeric newton/super value: `#X#` aliases substituted (review 27
+    Oct 2026, #57: newton values were a numeric block the aliases did not
+    reach), then parsed like Namics' Get_Real (`_num`). An unparseable
+    value still falls back to the solver default as in Namics, but LOUDLY
+    (once per process) -- `tolerance : .5` or an undefined `#TOL#` used to
+    run at the default 1e-7 without a word."""
+    raw = last(params, key)
+    if raw is None:
+        return None
+    text = substitute_aliases(raw, settings)
+    v = _num(text)
+    if v is None:
+        note = (f"newton : {block} : {key} : {raw} is not a number (Namics "
+                "would silently use the default) -- using the default"
+                + (f"; no alias defines {text.strip()}"
+                   if "#" in str(text) else
+                   "; write a leading digit (0.5, 1e-10)"))
+        if note not in _NEWTON_NOTES:
+            _NEWTON_NOTES.add(note)
+            print(f"  warning: {note}")
+    return v
+
+
 def _output_specs(settings, kind):
     """Lines like `pro : mol : pol : phi` -> [('mol','pol','phi'), ...].
     A '*' object name is expanded to every mol / mon in definition order,
@@ -62,19 +89,19 @@ def _pro_write_bounds(settings):
 def _newton_options(settings):
     opts = {}
     for name, params in get_blocks(settings, "newton"):
-        tol = _num(last(params, "tolerance"))
+        tol = _newton_num(settings, name, params, "tolerance")
         if tol is not None:
             opts["tolerance"] = tol
-        ilim = _num(last(params, "iterationlimit"))
+        ilim = _newton_num(settings, name, params, "iterationlimit")
         if ilim is not None:
             opts["iterationlimit"] = int(ilim)
-        dmax = _num(last(params, "deltamax"))
+        dmax = _newton_num(settings, name, params, "deltamax")
         if dmax is not None:
             opts["deltamax"] = dmax
-        m = _num(last(params, "m"))
+        m = _newton_num(settings, name, params, "m")
         if m is not None:
             opts["m_anderson"] = int(m)
-        method = last(params, "method")
+        method = substitute_aliases(last(params, "method"), settings)
         if method:
             if method == "pseudohessian":
                 # the Namics default: pseudohessian quasi-Newton as primary
@@ -89,7 +116,7 @@ def _newton_options(settings):
             else:
                 print(f"  note: newton method '{method}' unknown; using the "
                       "default solver cascade")
-        eng = last(params, "engine")
+        eng = substitute_aliases(last(params, "engine"), settings)
         if eng and eng.strip().lower() not in ("numpy", "np"):
             print(f"  note: newton engine '{eng}' unknown; "
                   "using the NumPy residual")
@@ -171,20 +198,20 @@ def _super_options(settings):
     super_iterationlimit = max(iterationlimit/10, 30)."""
     tol, ilim = 1e-7, 1000
     stol = sdmax = silim = None
-    for _, params in get_blocks(settings, "newton"):
-        v = _num(last(params, "tolerance"))
+    for name, params in get_blocks(settings, "newton"):
+        v = _newton_num(settings, name, params, "tolerance")
         if v is not None:
             tol = v
-        v = _num(last(params, "iterationlimit"))
+        v = _newton_num(settings, name, params, "iterationlimit")
         if v is not None:
             ilim = int(v)
-        v = _num(last(params, "super_tolerance"))
+        v = _newton_num(settings, name, params, "super_tolerance")
         if v is not None:
             stol = v
-        v = _num(last(params, "super_deltamax"))
+        v = _newton_num(settings, name, params, "super_deltamax")
         if v is not None:
             sdmax = v
-        v = _num(last(params, "super_iterationlimit"))
+        v = _newton_num(settings, name, params, "super_iterationlimit")
         if v is not None:
             silim = int(v)
     return {"tolerance": stol if stol is not None else 10.0 * tol,
@@ -198,9 +225,24 @@ def _check_first_start(settings):
     a later start may legitimately turn a frozen/pinned mon free while its
     old range line stays in the settings): a mon declared free together
     with a range is a contradiction -- the range was silently dropped
-    (review 6 Oct 2026, #25; Namics segment.cpp:1077-1083)."""
+    (review 6 Oct 2026, #25; Namics segment.cpp:1077-1083), and so is a
+    pinned mon carrying a frozen_range or a frozen one carrying a
+    pinned_range (review 27 Oct 2026, #25; Namics segment.cpp:306/388) --
+    in later starts the other freedom's line is a stale accumulated one,
+    which Segment ignores."""
     for name, params in get_blocks(settings, "mon"):
-        if str(last(params, "freedom", "free")).strip() != "free":
+        freedom = str(last(params, "freedom", "free")).strip()
+        if freedom in ("pinned", "frozen"):
+            other = "frozen" if freedom == "pinned" else "pinned"
+            # (only the other keyword: Segment raises 'requires a ..._range')
+            if f"{other}_range" in params and f"{freedom}_range" in params:
+                raise ValueError(
+                    f"mon {name}: freedom : {freedom} cannot be combined "
+                    f"with '{other}_range' (as in Namics: a {freedom} "
+                    f"segment takes its {freedom}_range only) -- drop the "
+                    f"{other}_range line")
+            continue
+        if freedom != "free":
             continue
         rng = [k for k in ("frozen_range", "pinned_range") if k in params]
         if rng:
@@ -469,7 +511,71 @@ def _var_plan(settings):
                 "release steps whole layers)")
         n_steps = int(round((end - cur) / step)) + 1
         values = [cur + i * step for i in range(max(n_steps, 1))]
+        # snap the round-off of the schedule END onto end_value: 0.15 by
+        # -0.05 lands on -2.8e-17, which the amount-domain pre-flight
+        # (_check_scan_domain) must not refuse (review 27 Oct 2026, #32)
+        values = [end if abs(v - end) <= 1e-9 * abs(step) else v
+                  for v in values]
     return key, name, prop, values
+
+
+# the domains of the scannable amounts (Namics molecule.cpp:421/506 and
+# state.cpp:84 refuse values outside them): (text, test)
+_SCAN_DOMAINS = {
+    ("mol", "phibulk"): ("[0, 1]", lambda v: 0.0 <= v <= 1.0),
+    ("mol", "theta"): (">= 0", lambda v: v >= 0.0),
+    ("mol", "n"): (">= 0", lambda v: v >= 0.0),
+    ("state", "alphabulk"): ("(0, 1)", lambda v: 0.0 < v < 1.0),
+}
+
+
+def _check_scan_domain(settings, plan):
+    """Pre-flight of a scan over an AMOUNT (mol phibulk/theta/n, state
+    alphabulk): every planned value must lie in the quantity's domain, else
+    the scan raises BEFORE step 0, naming the step and the value (review
+    27 Oct 2026, #32/#44). A descending linear ladder whose step does not
+    divide the range used to overshoot end_value 0 by one row and write a
+    converged-looking row of no physical state (a negative free phibulk).
+    Molecule / the bulk-ionisation solve refuse the same values at build
+    time; this check only moves the refusal ahead of the rows already
+    written. (Aliases do not reach these fields in this release, so an
+    alias scan cannot move them.)"""
+    key, name, prop, values = plan
+    if (key, prop) not in _SCAN_DOMAINS:
+        return
+    dom, ok = _SCAN_DOMAINS[(key, prop)]
+    if key == "mol":
+        # exactly the values Molecule refuses: a free molecule's phibulk,
+        # a restricted one's theta/n (the solvent's and the neutralizer's
+        # phibulk are set by the bulk closure)
+        fr = str(last(settings.get(("mol", name), {}), "freedom",
+                      "")).strip()
+        if fr != ("free" if prop == "phibulk" else "restricted"):
+            return
+    scan_params = _var_roles(settings)[0][1]
+    linear = (str(last(scan_params, "scale", "linear")).strip().lower()
+              == "linear")
+    for i, v in enumerate(values):
+        val = float(v)
+        if ok(val):
+            continue
+        sched = ", ".join(f"{float(x):g}" for x in values[:8]) + (
+            ", ..." if len(values) > 8 else "")
+        hint = ""
+        if linear and i == len(values) - 1 and i > 0:
+            # the documented round(): the step does not divide the range,
+            # and the extra last row left the domain
+            start = float(values[0])
+            step = float(values[1]) - start
+            end = float(last(scan_params, "end_value"))
+            k = max(int(np.ceil(abs(end - start) / abs(step) - 1e-9)), 1)
+            hint = (f" -- the step {step:g} does not divide end_value - "
+                    f"start; use step {(end - start) / k:g} or end_value "
+                    f"{float(values[-2]):g}")
+        raise ValueError(
+            f"var : {key}-{name} : scan : {prop}: step {i} (value {i + 1} "
+            f"of {len(values)}) sets {key} : {name} : {prop} to {val:g}, "
+            f"outside its domain {dom} (schedule {sched}){hint}")
 
 
 def _set_search(settings, search, X):
@@ -930,6 +1036,8 @@ def run_file(path, verbose=True):
         has_var = plan is not None
         if has_var:
             _check_layer_grid(settings, plan)
+        if has_var:
+            _check_scan_domain(settings, plan)
         steps = plan[3] if has_var else [None]
 
         x_scan_prev = None
