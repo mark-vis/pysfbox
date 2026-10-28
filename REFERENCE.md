@@ -205,7 +205,9 @@ smaller cell or more salt helps.
   `newton` `method` or `engine`** prints a `note:` and falls back to the default
   solver / NumPy residual.
 - An **unknown output property** is written as `NiN` in the `.kal` (and skipped
-  in the `.pro`), with a `warning:` on the console — like Namics.
+  in the `.pro`), with a `warning:` on the console — like Namics. A known
+  property that has no value for this state is also `NiN`, but with a
+  `note:` giving the reason instead of the `unknown` warning.
 - A **genuinely unsupported feature raises `NotImplementedError`** naming the
   feature and the alternative (e.g. "use the full Namics"), never a silently
   wrong number.
@@ -216,7 +218,10 @@ smaller cell or more salt helps.
   `search` (super-iteration), a failed inner solve reports the probe value and
   start, suggests a smaller `super_deltamax` when the probe step was large
   (the bracket probes by a factor 1 + `super_deltamax`), and otherwise points
-  at an unreachable/non-monotone target.
+  at an unreachable/non-monotone target. A failure at the search's FIRST
+  probe (the start value itself, before any search step) names the scan
+  step instead: the change since the previous converged state is too large,
+  declare a finer scan step.
 - **Post-solve input audit.** A converged residual proves the field
   equations hold, not that every requirement of the input does, so every
   accepted state is audited before it is written out, and a state that
@@ -545,7 +550,8 @@ lattice bound `surface` on that face** (`lat : ... : lowerbound : surface`;
 with a mirror bound the free species would fill the same ghost by reflection),
 only one segment may occupy a ghost face, only a `frozen` segment may sit
 there, and it may not be charged (`valence`/`e.psi0/kT`: the Poisson equation
-lives on the interior — put a charged wall or electrode on `1;1`). The
+lives on the interior — put a charged wall or electrode on `1;1`; an
+electrode, `e.psi0/kT`, also needs `FJC_choices : 3`, see below). The
 coordinates `0` and `n_layers+1` are the ghost walls too (`0;0` = `lowerbound`,
 as in Namics); coordinates outside `0..n_layers+1` raise. With refined lattices
 (`FJC_choices > 3`, `fjc > 1`), physical layers are expanded to refined sites
@@ -646,7 +652,13 @@ state explicitly, and states inherit their parent mon's χ unless overridden.
   **mutually exclusive** with `valence` (`valence and e.psi0/kT are mutually
   exclusive`). A fixed surface potential on a **curved** (cylindrical/spherical)
   lattice raises `fixed surface potential (e.psi0/kT) on a curved lattice is not
-  supported yet`. With an electrode, `grand_potential` and `free_energy` are the
+  supported yet`, and so does one on a **refined** planar lattice
+  (`FJC_choices > 3`; `fixed surface potential (e.psi0/kT) on a refined lattice
+  ... is not ported yet`, raised when the system is built): the electrode
+  anchor assumes one site per layer. Use `FJC_choices : 3`, or a fixed-charge
+  wall (`valence`), which works on refined lattices. The electrode must be a
+  single boundary-adjacent layer (`1;1` or `n;n`); multi-layer or interior
+  electrode blocks raise. With an electrode, `grand_potential` and `free_energy` are the
   **constant-potential** quantities: they include the electrode work term
   `−½ σ ψ0` (σ = the charge the electrode takes up), so `dΩ/dψ0 = −σ` (the
   Lippmann relation) holds. The equivalent fixed-charge wall (`valence` = σ at the
@@ -1228,6 +1240,16 @@ pro : sys : NN : psi
 - **Unknown props** — a kal prop with no match prints the literal `NiN` and a
   `warning: kal property ... unknown -> NiN` line; an unknown pro prop is
   skipped with a warning. This mirrors Namics exactly.
+- **Gated props** — a RECOGNISED kal prop that has no value for this state
+  (a gate: e.g. `kJ0`, or `X` without its `sys : NN : X` definition) also
+  prints `NiN`, after its own `note:` with the reason, followed by the
+  neutral line `note: kal property ... has no value for this state -> NiN`
+  — never the `unknown` warning, so a deliberate NiN cannot be mistaken for
+  a typo.
+- **Notes are per input file** — notes and warnings that qualify a printed
+  number (the two-sided `Laplace_pressure`, `kJ0`, an undeclared `X`, the
+  setup warnings) are printed once per input file, also when several files
+  run in one process (`pysfbox a.in b.in`).
 
 ### File formats
 
@@ -1582,7 +1604,7 @@ equilibration) or the equate-to-solvent / balance-membrane searches. A
 
 | param | default | meaning |
 |---|---|---|
-| `super_tolerance` | `10 × tolerance` | target-error tolerance (don't set it below the target observable's noise floor at the inner tolerance — for `Laplace_pressure` at inner 1e-7 that is ~1e-5). A bracket that collapses to round-off width with the error still above `super_tolerance` RAISES (7 Oct 2026; it used to return that point as the root): noise-limited (the error shrank by orders) → the message gives the value to set; a JUMP in the target across the point (a branch switch, spinodal, evaporation) → the message names the discontinuity and does NOT suggest loosening the tolerance |
+| `super_tolerance` | `10 × tolerance` | target-error tolerance (don't set it below the target observable's noise floor at the inner tolerance — for `Laplace_pressure` at inner 1e-7 that is ~1e-5). A bracket that collapses to round-off width with the error still above `super_tolerance` RAISES (7 Oct 2026; it used to return that point as the root). The diagnosis reads the readouts clustered at the collapse point (within 1e-9 relative), never the distance from the start (28 Oct 2026): noise-limited (the readouts scatter by their own size) → the message gives the value to set, 3 × their RMS; a JUMP in the target across the point (repeated readouts on each side agree, with opposite signs: a branch switch, spinodal, evaporation) → the message names the discontinuity and does NOT suggest loosening the tolerance; too few readouts to tell → it says so and suggests a tighter inner `tolerance` (noise shrinks with it, a jump does not) |
 | `super_deltamax` | `0.5` | the bracket probes the search variable by a factor **1 + super_deltamax**. The 0.5 default suits spherical θ~R³ searches (a probe moves R only ~14%); when θ translates a delta-pinned **flat** interface directly, use ~`0.01` — a ×1.5 probe rams 50% more material against the pinned wall and the inner SCF cannot follow |
 | `super_iterationlimit` | `max(iterationlimit // 10, 30)` | max super-iterations (each = one full SCF) |
 

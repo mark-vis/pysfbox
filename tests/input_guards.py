@@ -24,10 +24,13 @@ in N-D ranges (#28); from
 the 27 Oct 2026 review: [F32] amounts outside their domain + the scan end
 snap, [F44] alphabulk anchors, [F25] the range keyword follows the freedom,
 [F56] missing n_layers/composition, [F57] numbers and alias scope
-(newton/sys substitution, the unparseable-newton-value warning).
+(newton/sys substitution, the unparseable-newton-value warning); [E] a
+fixed-potential electrode on a refined lattice is refused at build, not
+as an 'interior electrode' at the first residual (28 Oct 2026).
 """
 import contextlib
 import io
+import math
 import os
 import sys
 import tempfile
@@ -928,6 +931,57 @@ raises("#R# in a mon chi is not substituted: raises as unparseable",
 raises("#R# in lat offset_first_layer still raises",
        "alias : R : value : 2\n" + WALL + "lat : flat : offset_first_layer :"
        " #R#\n", ValueError, ["#R#"])
+
+print("[E] fixed surface potential (e.psi0/kT) on a refined planar lattice")
+EL = """
+lat : flat : n_layers : 30
+lat : flat : geometry : planar
+lat : flat : lowerbound : surface
+lat : flat : FJC_choices : {fjc}
+mon : S : freedom : frozen
+mon : S : frozen_range : 1;1
+mon : S : {wall}
+mon : Na : freedom : free
+mon : Na : valence : 1
+mon : Cl : freedom : free
+mon : Cl : valence : -1
+mon : W : freedom : free
+mol : cl : composition : (Cl)1
+mol : cl : freedom : free
+mol : cl : phibulk : 0.01
+mol : na : composition : (Na)1
+mol : na : freedom : neutralizer
+mol : water : composition : (W)1
+mol : water : freedom : solvent
+newton : NN : tolerance : 1e-11
+"""
+for fjc in (5, 7):
+    raises(f"e.psi0/kT at FJC_choices {fjc}: refused at System build",
+           EL.format(fjc=fjc, wall="e.psi0/kT : -1"), NotImplementedError,
+           ["FJC_choices", "refined", "valence"])
+    try:
+        build(EL.format(fjc=fjc, wall="e.psi0/kT : -1"))
+    except NotImplementedError as e:
+        check(f"FJC_choices {fjc}: the message no longer says 'interior'",
+              "interior" not in str(e), str(e))
+    builds(f"a fixed-charge wall (valence) at FJC_choices {fjc} still builds",
+           EL.format(fjc=fjc, wall="valence : -0.2"))
+sel = build(EL.format(fjc=3, wall="e.psi0/kT : -1"))
+with contextlib.redirect_stdout(io.StringIO()):
+    sel.solve()
+check("the FJC_choices 3 electrode still converges with psi[1] = psi0",
+      abs(sel.psi[1] + 1.0) < 1e-12
+      and math.isfinite(sel.grand_potential()), f"psi[1] = {sel.psi[1]}")
+mlw = EL.format(fjc=3, wall="e.psi0/kT : -1").replace(
+    "frozen_range : 1;1", "frozen_range : 1;2")
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        build(mlw).solve()
+    check("a two-layer electrode (1;2) is refused", False,
+          "solved without complaint")
+except NotImplementedError as e:
+    check("a two-layer electrode (1;2) is refused as a multi-layer block",
+          "multi-layer" in str(e), str(e))
 
 print(f"all done ({failures} failure(s))")
 

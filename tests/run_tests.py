@@ -76,7 +76,9 @@ SKIP = {"polad.in", "Two_brushes_interactingSurfaceBC.in"}
 # guard scripts in this folder run as suite cases (exit 0 = PASS), with the
 # message printed on success: (script stem, message)
 GUARD_SCRIPTS = (("input_guards", "all guards raise"),
-                 ("compare_guards", "all comparator verdicts as expected"))
+                 ("compare_guards", "all comparator verdicts as expected"),
+                 ("message_guards", "console notes and search diagnostics "
+                  "as expected"))
 
 
 def _field(v, strings):
@@ -202,6 +204,8 @@ def run_case(in_name):
                       f"({dt:.1f} s)")
 
 
+# guard scripts run as suite cases (exit 0 = PASS), with the message
+# printed on success: (script stem, message)
 def main(argv):
     pattern = argv[1] if len(argv) > 1 else ""
     inputs = sorted(os.path.basename(p)
@@ -219,7 +223,8 @@ def main(argv):
         failures += not ok
     # guard scripts whose claims cannot be expressed as a reference
     # comparison: the input guards (tests/input_guards.py, "this input must
-    # RAISE") and the comparator's own verdicts on mutated tables
+    # RAISE"), the message guards (tests/message_guards.py, "this run must
+    # PRINT") and the comparator's own verdicts on mutated tables
     # (tests/compare_guards.py)
     for guard, ok_msg in GUARD_SCRIPTS:
         if pattern not in guard:
