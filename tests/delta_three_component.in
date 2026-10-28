@@ -1,0 +1,116 @@
+// THREE-COMPONENT delta constraint at phi_ratio != 1 (31 Jul 2026).
+// The run also prints the once-per-start ratio-reading note (start 3);
+// tests/message_guards.py checks it.
+//
+// GUARDS: 'phi_ratio' parametrises the pinned DIFFERENCE
+// phi_A - phi_B = (r-1)/(r+1), NOT the local ratio phi_A/phi_B. The two
+// readings coincide only where the two delta_molecules fill the site
+// (phi_A + phi_B = 1), or at r = 1 where the pinned difference is zero.
+// Every other delta regression is blind to a difference-vs-ratio mix-up:
+// delta_micelle/delta_scan/delta_poly/delta_branched are BINARY at the mask
+// (phi_A + phi_B = 1 exactly), and process_demo.in has a third molecule but
+// pins at r = 1. This case has both a dominant third component AND r != 1.
+//
+// SETUP: spherical oil droplet (nucleated by a pinned core, start 1;
+// released, start 2) wrapped in a dense pinned polymer shell that overlaps
+// the oil/water interface. The delta constraint pins oil;W at layer 6 --
+// INSIDE the shell, where the shell holds ~77% of the sites and the two
+// named molecules share only ~23% between them. (The shell is pinned to a
+// range rather than made interface-active on purpose: it fixes the
+// three-component structure at the mask deterministically, with no
+// adsorption tuning to drift under future changes.)
+//
+// VERIFIED AT CREATION (start 3, mask site layer 6 = .pro coordinate 5.5,
+// fjc = 1 so x = n - 0.5):
+//   phi_oil - phi_W = -0.1111111070  vs  R = (0.8-1)/(0.8+1) = -0.1111111111
+//                                        -> dev 4.1e-09, the solver floor
+//   phi_oil + phi_W =  0.2266  (phi_shell = 0.7734)
+//   phi_oil / phi_W =  0.3421  vs  phi_ratio = 0.8  -> the ratio reading is
+//                                  off by 2.34x, and would be off without
+//                                  limit as the third component grows
+//   beta = +0.0721 at layer 6 and EXACTLY 0 everywhere else (pro : sys : beta
+//   is the way to see which site a delta_range actually landed on)
+//
+// THE TRAP, on this system's own numbers: at layer 6 the UNCONSTRAINED
+// (start 2) state has phi_oil - phi_W = -0.06867 and phi_oil/phi_W = 0.54249.
+// Passing that RATIO as phi_ratio imposes R = -0.29661 -- a perturbation 4.3x
+// the equilibrium difference. The no-op value is r = (1+d)/(1-d) = 0.87149
+// with d the DIFFERENCE. Start 3 pins at 0.8, a mild compression below it
+// (27 iterations, beta small and positive).
+//
+// ORACLE-VALIDATED 31 Jul 2026 against the compiled Namics (namics.exe,
+// Jan 2026 build). Profiles agree at the shared convergence floor: max |dev|
+// 9.1e-08 (start 2) / 5.8e-08 (start 3) on every molecule phi; F 1.3e-08 rel
+// and GP 3.5e-09 rel on the constrained row; theta exact; the phi_ratio kal
+// column is NiN on the unconstrained rows in BOTH engines and 0.8 on the
+// constrained one.
+//
+// THE ORACLE CONFIRMS THE POINT OF THIS TEST. At the mask Namics itself
+// reaches phi_oil - phi_W = -0.111111110344 (|d - R| = 7.7e-10) while its own
+// local ratio there is 0.34207 -- the same 2.34x miss as PySFBox, to five
+// digits. So pinning a DIFFERENCE, and the ratio reading breaking down once a
+// third component shares the site, is upstream behaviour, not a PySFBox
+// deviation; cf. system.cpp:2213 "only works for two components..." and the
+// abandoned true-ratio residual at :2222-2231 (line numbers pinned to the
+// canonical 3e9eafd, which also reproduces the Windows-build oracle data
+// here to <=2e-10 -- see the oracle folder's README).
+//
+// ORACLE RECIPE (this input needs four edits before the binary accepts it):
+// declare lat : lattice_type : simple_cubic (Namics has no default, PySFBox
+// defaults to it); move both kal : mol lines ABOVE the kal : sys lines; drop
+// pro : sys : NN : beta (PySFBox extension); add the
+// sys : overflow_protection : true shim. Then run from a dir containing an
+// output/ subfolder. Namics writes headers with '_' where PySFBox writes ':'.
+
+lat : NN : geometry : spherical
+lat : NN : n_layers : 40
+lat : NN : lowerbound : mirror
+
+mon : O : freedom : pinned
+mon : O : pinned_range : 1;6
+mon : P : freedom : pinned
+mon : P : pinned_range : 5;10
+mon : W : freedom : free
+
+mon : O : chi_W : 2.0
+mon : P : chi_O : 0.5
+mon : P : chi_W : 0.5
+
+mol : oil : composition : (O)20
+mol : oil : freedom : restricted
+mol : oil : theta : 700
+
+mol : shell : composition : (P)10
+mol : shell : freedom : restricted
+mol : shell : theta : 3000
+
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+
+newton : n : tolerance : 1e-7
+
+output : kal : append : false
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+kal : sys : NN : phi_ratio
+kal : mol : oil : theta
+kal : mol : shell : theta
+
+output : pro : append : false
+pro : mol : oil : phi
+pro : mol : shell : phi
+pro : mol : W : phi
+pro : sys : NN : beta
+
+start
+
+mon : O : freedom : free
+
+start
+
+sys : NN : constraint : delta
+sys : NN : delta_molecules : oil;W
+sys : NN : delta_range : (6)
+sys : NN : phi_ratio : 0.8
+
+start

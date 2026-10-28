@@ -1072,9 +1072,9 @@ sys : NN : initial_guess : polymer_adsorption
 | `overflow_protection` | `true` / `false` | (ignored) | accepted for Namics input compatibility, but a **no-op** — see below |
 | `constraint` | `delta` | (off) | pin an interface — see the delta-constraint subsection below |
 | `delta_range` | `(z)` or `(z1);(z2);...` | — | the pinned site(s), required with `constraint : delta` |
-| `delta_molecules` | `A;B` | — | the two molecules whose local ratio is pinned |
-| `phi_ratio` | positive real or `critical_ratio` | — | target ratio r; `critical_ratio` = √(N_B/N_A), the Flory–Huggins critical composition φ_A/φ_B of the pair (Namics uses √(N_A/N_B), the inverse — deliberate deviation since 7 Oct 2026) |
-| `delta_range_units` | `bondlength` / `gritsize` | — | required at `FJC_choices > 3`: `delta_range` in layers (×fjc) or refined sub-layers |
+| `delta_molecules` | `A;B` | — | the two molecules whose local density difference is pinned; A is the first name |
+| `phi_ratio` | positive real or `critical_ratio` | — | sets the pinned difference φ_A − φ_B = (r−1)/(r+1); this equals the ratio φ_A/φ_B = r only where φ_A + φ_B = 1; to pin an existing (unconstrained) state, declare r = (1+d)/(1−d) with d = φ_A − φ_B read from the unconstrained profiles; `critical_ratio` = √(N_B/N_A), the Flory–Huggins critical composition φ_A/φ_B of the pair (Namics uses √(N_A/N_B), the inverse — deliberate deviation since 7 Oct 2026) |
+| `delta_range_units` | `bondlength` / `gritsize` | — | required at `FJC_choices > 3`: `delta_range` in layers (×fjc) or refined sub-layers. A bondlength layer n pins the outermost of its fjc sub-layers — refined site `fjc−1+n·fjc`, which is `.pro` coordinate x = n − 1/(2·fjc) (fjc = 1: the familiar n − 0.5) |
 | `X` | `F-mol1-mol2-...-(s_i,s_j,n)-...` or `?` | — | the Namics characteristic function, printed by `kal : sys : NN : X`: X = F − Σ<sub>listed</sub> n<sub>i</sub>μ<sub>i</sub> − Σ n·θ<sub>s_i</sub>·μ<sub>s_j</sub>. A bare molecule name subtracts that molecule's n·μ (repeats allowed); `(s_i,s_j,n)` subtracts n × the amount θ of state s_i (summed over all sites and molecules) × the chemical potential `mu-<s_j>` of state s_j, which must be a state of exactly ONE monomeric molecule. Whitespace is free. The first item must be `F`; `X : ?` prints the help and stops, like every malformed entry (a `ValueError` naming the entry, raised before the solve). Typical use: `F-water-Na-Cl` = Ω + Σ μ n over the molecules NOT listed, i.e. the potential canonical in a grafted/pinned/surface-group molecule and grand in every mobile one. Deviations from Namics, all deliberate: a state μ without a single monomeric host raises (Namics prints a warning, uses μ = 0, and reuses the previous entry's μ for later misses); `mu-<state>` is computed fresh (inside a var scan Namics accumulates it, so its X with a state entry is wrong from the second row); `X : F` prints F (Namics prints nothing). Oracle-validated to 2e-11 (`tests/namics_X.in`) |
 | `compute_kJ0` | anything | — | **refused** (`NotImplementedError`): Namics' `kJ0`/`kbar` columns are the bare first/second moments of the planar grand-potential density (taken about z = 0, a Namics bug), not the Helfrich constants kappa·J0 and kbar of a self-consistent film — they miss the chain-end, bulk-jump and χ site-average contributions. Remove the line. The Helfrich constants follow from curved ladders (fit the grand potential of cylinders and spheres against 1/R); the PySFBox development version also computes them from one flat film |
 
@@ -1103,10 +1103,19 @@ the compiled Namics (whose recent builds nag without it) at no cost here.
 **The delta constraint (`constraint : delta`).** Pins the local composition of
 two molecules at the `delta_range` site(s): a Lagrange-multiplier field β(z)
 joins the iteration (one extra block of unknowns) and drives
-φ_A − φ_B = (r−1)/(r+1) there, with r = `phi_ratio` (at incompressibility
-that is the ratio φ_A/φ_B = r). Molecule A (first in `delta_molecules`)
-propagates with G1·e^(−β), B with G1·e^(+β); the β work term −β(φ_A−φ_B)
-enters both the free energy and the grand potential, so F = Ω + Σnμ holds.
+φ_A − φ_B = (r−1)/(r+1) there, with r = `phi_ratio`. Molecule A (first in
+`delta_molecules`) propagates with G1·e^(−β), B with G1·e^(+β); the β work
+term −β(φ_A−φ_B) enters both the free energy and the grand potential, so
+F = Ω + Σnμ holds. Note the name: `phi_ratio` pins a **difference**, which
+equals the local ratio φ_A/φ_B = r only where the two molecules fill the
+site (φ_A + φ_B = 1) or at r = 1. When the converged mask is not binary
+(r ≠ 1 and φ_A + φ_B deviates from 1 by more than 0.01 at a mask site), the
+runner prints a once-per-start note giving the actual local ratio there and
+the inversion r = (1+d)/(1−d), with d = φ_A − φ_B the difference you want
+to pin. Upstream Namics pins the same difference. Regression with a
+dominant third component at the mask and r ≠ 1:
+`tests/delta_three_component.in` (oracle-validated; the note itself is
+checked by `tests/message_guards.py`).
 
 ```
 sys : NN : constraint : delta
@@ -1327,7 +1336,7 @@ Types: `int` → `%d`, `real` → `%.16e`, `string` → printed bare (like Namic
 | `sys` | `grand_potential` | real | grand potential Ω (per unit area / normalised as in Namics) |
 | `sys` | `electrode_charge` | real | σ, the charge the fixed-potential electrode(s) (`e.psi0/kT`) took up from their battery, in elementary charges per site area, summed over the electrode sites like `grand_potential` (per unit area on the planar lattice). Sign: positive when the electrode took up positive charge (a positive ψ0 against a salt solution gives σ > 0); with the solution's charge it makes the box neutral (the post-solve electroneutrality audit checks exactly that sum). The σ of the work term −½ σ ψ0 in Ω and F. Use this column for the electrode charge and the differential capacitance dσ/dψ0: `dΩ/dψ0 = −σ` holds only when every molecule is free (see `e.psi0/kT`). NiN with a note when the system has no electrode. PySFBox extension (no Namics counterpart) |
 | `sys` | `Laplace_pressure` | real | the pressure difference across the system, Δp = p<sub>in</sub> − p<sub>out</sub> = −ω(first interior layer) + ω(last interior layer), with ω(z) the grand-potential density (`pro : sys : X : grand_potential_density`, a local −pressure; 1-gradient; at fjc > 1 the first refined site of each outer physical layer). For a droplet/micelle/vesicle centred at the lower bound whose far side reaches a bulk plateau this is the Laplace pressure: Δp = 2γ/R<sub>s</sub> (sphere) or γ/R<sub>s</sub> (cylinder) at the surface of tension R<sub>s</sub>, 0 across a flat interface, and 0 at the pressure-balanced (tensionless) point that the `Laplace_pressure` search drives to. It is NOT a pressure difference when either end layer is not a bulk plateau (a wall, a brush, a box too small for the far field). A **frozen end layer** (a droplet nucleated on a frozen core, a particle-seeded Ω(R) ladder, a frozen wall block at either end) has ω = 0 by construction, so it is not read itself (28 Oct 2026; before, every cored droplet printed ~1e-16): past the frozen block (and its fjc + 1 contact sites) ω is read at the most stationary site before the first interface, accepted when its local variation, the magnitude of ω(i+1) − ω(i−1), is at most 10 % of the magnitude of ω(i) (+ 1e-6 of the largest ω magnitude); when every density there is within 1e-2 of its far-end value (one phase from the core outward, no droplet) at the far-end site, so Δp = 0; a one-time note names the site, its ω and its local variation, and Δp is only as good as that plateau. **No plateau** (a thin shell or a film around the core): NiN with a note. Namics reads the frozen layer itself and prints 0 there. **Deliberate deviation from Namics** (7 Oct 2026): Namics prints −ω(first) only, which equals Δp only when the far side sits at ω = 0 (a reservoir-terminated box: free molecules set the far field — every regression with this column is of this kind and printed unchanged). With restricted phase formers the implied bulk can land on a phase or an absent state, the far plateau carries ω ≠ 0, and the one-sided value is no pressure difference (a flat two-phase box: one-sided −0.0396, two-sided 3e-11). PySFBox prints a one-time note giving both values whenever the magnitude of ω(last) exceeds max(1e-7, 1e-4 × the magnitude of Δp), i.e. whenever the column differs visibly from Namics'. Same quantity as the `Laplace_pressure` search target |
-| `sys` | `phi_ratio` | real | the delta-constraint target ratio r (constraint runs only) |
+| `sys` | `phi_ratio` | real | the delta-constraint parameter r (constraint runs only) |
 | `sys` | `free_energy`, `free_energy(po)` | real | Helmholtz free energy F (both spellings map to F; `(po)` is Namics' Ω + Σnμ route to the same value) |
 | `sys` | `iterations` | int | solver iteration count (solver-dependent; ignored in regression diffs) |
 | `sys` | `residual` | real | final residual norm (solver-dependent) |

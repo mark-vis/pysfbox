@@ -1278,6 +1278,13 @@ def run_file(path, verbose=True):
                           "('sys : initial_guess' acts on the first "
                           "calculation only).")
                 structure_prev[mname] = mdev
+            # delta-constraint naming trap: phi_ratio pins a DIFFERENCE;
+            # when the converged mask is not binary the declared value is
+            # NOT the local ratio there -- name it (once per start)
+            if subl == 0 and system.constraintfields:
+                dnote = system.delta_ratio_note()
+                if dnote:
+                    print(dnote)
             if kal_specs:
                 write_kal(kal_path(base), kal_specs, system,
                           new_file=not kal_started)
