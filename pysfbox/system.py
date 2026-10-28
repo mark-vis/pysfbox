@@ -1436,11 +1436,93 @@ class System:
         formers the implied bulk can land on a phase or an absent state,
         omega(last) != 0, and the one-sided column is no pressure
         difference at all. At a droplet's surface of tension R_s,
-        Delta p = 2 gamma/R_s (sphere), gamma/R_s (cylinder), 0 (flat)."""
-        lat = self.lat
+        Delta p = 2 gamma/R_s (sphere), gamma/R_s (cylinder), 0 (flat).
+
+        A FROZEN end layer (a core the droplet sits on, a frozen wall
+        block) has omega = 0 by construction, which made a cored droplet
+        print dp ~ 1e-16 and a Laplace_pressure : 0 search accept its
+        first probe (28 Oct 2026): that end is read at the bulk plateau
+        past the frozen block instead (`_laplace_sites`), and dp is NaN
+        when there is none. Free end layers are read exactly as before
+        (bit-identical)."""
         gpd = self.grand_potential_density()
-        w_last = float(gpd[lat.M - 2 * lat.fjc])
-        return float(-gpd[lat.fjc]) + w_last, w_last
+        i_in, i_out = self._laplace_sites(gpd)
+        if i_out is None:
+            return float("nan"), float("nan")
+        w_last = float(gpd[i_out])
+        if i_in is None:
+            return float("nan"), w_last
+        return float(-gpd[i_in]) + w_last, w_last
+
+    def _laplace_sites(self, gpd):
+        """(i_in, i_out): the sites laplace_pressure reads omega at. A
+        free end layer is read itself (site fjc, site M - 2 fjc); a
+        frozen one at the plateau past the frozen block
+        (`_core_plateau_site`), None when there is no plateau."""
+        lat = self.lat
+        free = np.where(lat.interior & (self.ksam > 0))[0]
+        sites = []
+        for i_end, order in ((lat.fjc, free), (lat.M - 2 * lat.fjc,
+                                               free[::-1])):
+            sites.append(i_end if self.ksam[i_end] > 0
+                         else self._core_plateau_site(gpd, order))
+        return sites[0], sites[1]
+
+    def _core_plateau_site(self, gpd, sites):
+        """Bulk-plateau site next to a frozen block, for the Laplace
+        pressure. `sites` are the free sites ordered from the frozen
+        block outward. The first fjc + 1 of them carry the contact chi
+        term (the site average reaches fjc sites, plus one for margin)
+        and are skipped. Then:
+        - every density within 1e-2 of its far-end value past them: ONE
+          phase from the core to the far end (a contact tail at most, no
+          droplet): the most stationary omega site of the whole window,
+          unconditionally, so dp = 0 up to solver noise -- the reading
+          of the same state without a core (and the mid-slab plateau
+          between two frozen walls);
+        - else the window ends at the first interface, the half-height
+          crossing of the molecule whose density changes most between
+          the window start and the far end, and the site with the most
+          stationary omega, min |omega(i+1) - omega(i-1)|, is accepted
+          when that variation is at most 10 % of |omega(i)| plus 1e-6 of
+          the largest |omega| on the free sites -- an outer bulk sits at
+          omega ~ 0, where the relative test alone would reject solver
+          noise.
+        None: no plateau (a thin shell or film around the core)."""
+        skip = self.lat.fjc + 1
+        if len(sites) < skip + 3:
+            return None
+        win = sites[skip:]
+        dev, best = 0.0, None
+        for m in self.molecules.values():
+            d = float(np.abs(m.phi[win] - m.phi[win[-1]]).max())
+            if d > dev:
+                dev, best = d, m
+        one_phase = dev <= 1e-2
+        cand = win[:-1]               # both neighbours of a candidate exist
+        if not one_phase:
+            k = self._half_height_crossing(best.phi, win)
+            if k is not None:
+                cand = cand[:k]
+        if len(cand) == 0:
+            return None
+        var = np.abs(gpd[cand + 1] - gpd[cand - 1])
+        j = int(np.argmin(var))
+        i = int(cand[j])
+        scale = float(np.abs(gpd[sites]).max())
+        if not one_phase and var[j] > 0.1 * abs(gpd[i]) + 1e-6 * scale:
+            return None                   # layered, not a bulk plateau
+        return i
+
+    @staticmethod
+    def _half_height_crossing(phi, sites):
+        """Position (into `sites`, ordered outward) of the first site
+        where phi has crossed half-way from phi[sites[0]] to
+        phi[sites[-1]]; None when it never does."""
+        half = 0.5 * (phi[sites[0]] + phi[sites[-1]])
+        side = np.sign(phi[sites[0]] - half)
+        beyond = np.where(np.sign(phi[sites] - half) != side)[0]
+        return int(beyond[0]) if beyond.size else None
 
     def grand_potential_density(self):
         """Per-layer grand-potential density: the integrand whose lattice
@@ -1782,6 +1864,34 @@ class System:
             # grand_potential_density (21 Jul 2026).
             if prop == "Laplace_pressure" and self.lat.gradients == 1:
                 dp, w_last = self.laplace_pressure()
+                lat = self.lat
+                if self.ksam[lat.fjc] <= 0 or self.ksam[lat.M - 2
+                                                         * lat.fjc] <= 0:
+                    # a frozen end layer (28 Oct 2026): read at the bulk
+                    # plateau past it, NiN when there is none
+                    gpd = self.grand_potential_density()
+                    sites = self._laplace_sites(gpd)
+                    if not np.isfinite(dp):
+                        print("  note: sys : Laplace_pressure: an end layer "
+                              "is frozen (a core or wall block) and there "
+                              "is no bulk plateau past it (a thin shell or "
+                              "film around the core?): the pressure "
+                              "difference is undefined -> NiN")
+                        return None, None
+                    if "laplace_frozen_end" not in _WARN_NOTES:
+                        _WARN_NOTES.add("laplace_frozen_end")
+                        xs = ", ".join(
+                            f"x = {lat.offset + lat.z_phys[i - lat.fjc]:g}"
+                            f" (omega {gpd[i]:.6e}, local variation "
+                            f"{abs(gpd[i + 1] - gpd[i - 1]):.1e})"
+                            for i, e in zip(sites, (lat.fjc,
+                                                    lat.M - 2 * lat.fjc))
+                            if i != e)
+                        print(f"  note: sys : Laplace_pressure: an end "
+                              f"layer is frozen (a core or wall block), so "
+                              f"omega is read at the bulk plateau past it: "
+                              f"{xs}. Namics reads the frozen layer itself "
+                              f"(omega = 0 there). Note printed once")
                 if (abs(w_last) > max(1e-7, 1e-4 * abs(dp))
                         and "laplace_two_sided" not in _WARN_NOTES):
                     _WARN_NOTES.add("laplace_two_sided")

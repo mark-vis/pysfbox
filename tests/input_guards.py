@@ -14,7 +14,8 @@ neutralizer bulk, [30] bound values + wrong-dimension keys, [31] lambda at
 fjc>1/N-D, [36] 1-D range bounds, [46] micro/bate blocks, [59] mol
 freedom/amount, [61] unused state chi, [71] UTF-8 BOM, [84] mu : 0,
 [45] var scan validation, [53] one target per var block; [X] the
-characteristic-function parse errors and compute_kJ0 (9 Oct 2026).
+characteristic-function parse errors and compute_kJ0 (9 Oct 2026); [L]
+Laplace_pressure around a frozen core with no bulk plateau (28 Oct 2026).
 """
 import contextlib
 import io
@@ -384,6 +385,57 @@ builds("X : F - water - pol (spaces are free, as in Namics)",
 raises("compute_kJ0 is refused with the pointer",
        WALL + "sys : NN : compute_kJ0 : true\n", NotImplementedError,
        ["compute_kJ0", "bare first and second moments", "curved ladders"])
+
+print("[L] Laplace_pressure around a frozen core with no bulk plateau")
+# a thin oil shell (30-layer sphere, theta 1500) on a frozen core: no
+# interior plateau past the core, so the kal column is NiN and a
+# Laplace_pressure search raises instead of reading the frozen layer's
+# omega = 0 and accepting its first probe (28 Oct 2026; the plateau case
+# itself is the regression tests/laplace_core.in)
+THIN = """
+lat : NN : geometry : spherical
+lat : NN : n_layers : 30
+lat : NN : lowerbound : mirror
+mon : X : freedom : frozen
+mon : X : frozen_range : 1;4
+mon : O : freedom : pinned
+mon : O : pinned_range : 5;20
+mon : W : freedom : free
+mon : O : chi_W : 1.2
+mol : oil : composition : (O)20
+mol : oil : freedom : restricted
+mol : oil : theta : 1500
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+newton : n : tolerance : 1e-9
+output : kal : append : false
+kal : mol : oil : theta
+kal : sys : NN : Laplace_pressure
+start
+mon : O : freedom : free
+{last}
+start
+"""
+for label, last in (("thin-shell kal Laplace_pressure is NiN", ""),
+                    ("thin-shell Laplace_pressure search raises",
+                     "var : mol-oil : search : theta\n"
+                     "var : sys-NN : Laplace_pressure : 0")):
+    p = write(THIN.format(last=last), "thin.in")
+    err = None
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            runner.run_file(p, verbose=False)
+        except Exception as e:                      # noqa: BLE001
+            err = e
+    rows = [ln.split("\t") for ln in
+            open(p[:-3] + ".kal").read().split("\n")[1:] if ln]
+    if last:
+        check(label, isinstance(err, ValueError)
+              and "Laplace_pressure undefined" in str(err)
+              and len(rows) == 1, repr(err))
+    else:
+        check(label, err is None and len(rows) == 2
+              and rows[1][1] == "NiN", f"{err!r} {rows}")
 
 print(f"all done ({failures} failure(s))")
 

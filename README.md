@@ -54,7 +54,7 @@ free-energy/chemical-potential index terms, the fixed-potential electrode's
 field energy and work term, the free-energy term of states with different χ,
 the `critical_ratio` composition) or where a Namics output column is not the
 quantity its name promises (`Laplace_pressure` is the two-sided pressure
-difference; moments of a vanishing excess print `nan`) — each noted in the
+difference, read past a frozen core at its bulk plateau; moments of a vanishing excess print `nan`) — each noted in the
 relevant section below. Inputs that Namics refuses, and a few it accepts but
 solves wrongly, raise with an explanation instead of running.
 
