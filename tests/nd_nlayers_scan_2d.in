@@ -1,0 +1,62 @@
+// N-D box-size changes keep the warm seed on its lattice coordinates
+// (synced from pysfbox-dev PR #170, 28 Oct 2026). A restricted (A)10
+// droplet in a 2-D flat 12x12 box (mirror on all four sides) is nucleated
+// with a pinned corner patch (start 1), released (start 2), then
+//   start 3: var scan n_layers_y 12 -> 14 (one step of 2: the INNER axis of
+//            the C-order padded grid changes, so every row has a new stride);
+//   start 4: n_layers_x 14 / n_layers_y 12 -- the same M as 12x14 with the
+//            axes swapped (the transposed box); the inherited scan then
+//            grows it to 14x14.
+// runner._remap_layers applies the two-wall split PER AXIS (_grid_shape =
+// LatticeND.pdims), and an equal-M reshape is a grid change, not a plain
+// x_prev seed.
+// CHECKS at creation:
+//  - the ny = 14 row equals the droplet nucleated DIRECTLY in a 12x14 box
+//    (same two starts at n_layers_y 14): F -0.8919520357 / Omega 0.7846974981
+//    vs scan F -0.8919520208 / Omega 0.7846974932 (solver floor, tol 1e-8);
+//  - the 14x12 row equals the 12x14 row by the x <-> y mirror symmetry;
+//  - the 14x14 row equals the droplet nucleated directly in 14x14;
+//  - every row equals pysfbox-dev's output on this input (solver floor).
+// The pre-fix code split each flat block as a 1-D column, which sheared the
+// droplet diagonally across the box: with this iterationlimit the ny = 14
+// step converged (31394 iterations) onto the TWO-HALF-DROPLET branch,
+// F -0.2084841 / Omega 1.2280910, 0.68 kT above the continuation, with no
+// note; at the default limit it failed, retried cold and recorded the
+// uniform state. The swapped start passed the 12x14 seed through unchanged.
+// No Namics oracle (an N-D warm-seed path; the converged states are pinned
+// by the direct solves above).
+lat : NN : gradients : 2
+lat : NN : geometry : flat
+lat : NN : n_layers_x : 12
+lat : NN : n_layers_y : 12
+lat : NN : lowerbound_x : mirror
+lat : NN : upperbound_x : mirror
+lat : NN : lowerbound_y : mirror
+lat : NN : upperbound_y : mirror
+mon : A : freedom : pinned
+mon : A : pinned_range : 1,1;5,5
+mon : W : freedom : free
+mon : A : chi_W : 1.5
+mol : A : composition : (A)10
+mol : A : freedom : restricted
+mol : A : theta : 20
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+newton : n : tolerance : 1e-8
+newton : n : iterationlimit : 30000
+output : kal : append : false
+kal : mol : A : phiMax
+kal : lat : NN : n_layers_x
+kal : lat : NN : n_layers_y
+kal : sys : NN : free_energy
+kal : sys : NN : grand_potential
+start
+mon : A : freedom : free
+start
+var : lat-NN : scan : n_layers_y
+var : lat-NN : step : 2
+var : lat-NN : end_value : 14
+start
+lat : NN : n_layers_x : 14
+lat : NN : n_layers_y : 12
+start
