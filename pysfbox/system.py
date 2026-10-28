@@ -721,9 +721,15 @@ class System:
         # ---- delta constraint (sys : constraint : delta) -----------------
         # Pins an interface: at the delta_range sites the two
         # delta_molecules' total densities are held at
-        # phitot_A - phitot_B = (r-1)/(r+1) with r = phi_ratio (at
-        # incompressibility, phitot_A + phitot_B ~= 1, that is the ratio
-        # phi_A/phi_B = r). Mechanics (Namics system.cpp:735-908 parsing,
+        # phitot_A - phitot_B = (r-1)/(r+1) with r = phi_ratio. NOTE the
+        # keyword name promises more than the residual delivers: the
+        # DIFFERENCE is what is pinned, and it equals the local ratio
+        # phi_A/phi_B = r only where the two delta molecules fill the site
+        # (phi_A + phi_B = 1; a third component at the mask breaks the
+        # ratio reading without limit -- tests/delta_three_component.in,
+        # delta_ratio_note below). Upstream Namics is identical: its
+        # true-ratio residual was abandoned ("no success yet",
+        # system.cpp:2222-2231). Mechanics (Namics system.cpp:735-908 parsing,
         # solve_scf.cpp:86 extra block, system.cpp:2113 PutU,
         # system.cpp:2240-2247 residual, molecule.cpp:2654 ComputePhi):
         # a Lagrange-multiplier field beta(z) joins the iteration stack as
@@ -983,6 +989,38 @@ class System:
                     f"(theta x the {seg.name} fraction of the chain): no "
                     f"state with phi <= 1 exists. Widen "
                     f"'mon : {seg.name} : pinned_range' or lower theta")
+
+    def delta_ratio_note(self):
+        """Advisory for the delta constraint's naming trap: `phi_ratio` r
+        pins the DIFFERENCE phi_A - phi_B = (r-1)/(r+1), which equals the
+        local ratio phi_A/phi_B = r only where the two delta_molecules fill
+        the site (phi_A + phi_B = 1), or trivially at r = 1. Evaluated on
+        the CONVERGED profiles: returns a one-line note naming the actual
+        local ratio at the worst mask site plus the inversion formula
+        r = (1+d)/(1-d), or None when the ratio reading is fine (no
+        constraint, r = 1, or a binary mask). The runner prints it once
+        per start."""
+        if not self.constraintfields or abs(self.phi_ratio - 1.0) < 1e-9:
+            return None
+        sites = np.where(self.delta_mask > 0)[0]
+        if sites.size == 0:
+            return None
+        molA, molB = self.delta_molecules
+        a, b = molA.phi[sites], molB.phi[sites]
+        i = int(np.argmax(np.abs(a + b - 1.0)))
+        S = float(a[i] + b[i])
+        if abs(S - 1.0) <= 0.01:
+            return None
+        x = self.lat.z_phys[sites[i] - self.lat.fjc]
+        ratio = float(a[i] / b[i]) if b[i] > 0 else float("inf")
+        return (f"  note: phi_ratio {self.phi_ratio:g} pins the difference "
+                f"phi_{molA.name} - phi_{molB.name} = {self.delta_R:.6g}, "
+                f"not the local ratio: at mask x = {x:g} the two "
+                f"delta_molecules fill {S:.0%} of the site, so the local "
+                f"ratio there is {ratio:.4g}. The ratio reading needs "
+                "phi_A + phi_B = 1 at the mask; to pin an existing state's "
+                "composition, declare phi_ratio = (1+d)/(1-d) with d = "
+                "phi_A - phi_B read from the unconstrained profiles.")
 
     def var_mask(self):
         """Boolean mask over the full variable vector selecting what the

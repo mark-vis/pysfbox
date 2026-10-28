@@ -21,6 +21,14 @@ tests/run_tests.py as the 'message_guards' case (a few seconds).
       jump reached from a distant start used to be called noise.
 [rf]  an inner failure at the search's START value names the scan step,
       not super_deltamax (the first probe takes no search step).
+[delta] `phi_ratio` r pins the DIFFERENCE phi_A - phi_B = (r-1)/(r+1); the
+      local ratio phi_A/phi_B equals r only where the two delta_molecules
+      fill the site. The runner's ratio-reading note (System.
+      delta_ratio_note) FIRES once on tests/delta_three_component.in (a
+      dominant third component at the mask, r = 0.8: local ratio 0.3421,
+      the r = (1+d)/(1-d) inversion named), and is SILENT on a binary mask
+      at r != 1 (tests/delta_micelle.in) and at r = 1 with the same third
+      component (the pinned difference is 0, difference = ratio reading).
 """
 import contextlib
 import hashlib
@@ -170,6 +178,32 @@ with tempfile.TemporaryDirectory() as tmp:
           count(lp2, LP_NOTE) == 1)
     check("the two files print the same Laplace_pressure",
           r1[1] == r2[1], f"{r1[1]} / {r2[1]}")
+
+    print("[delta] the phi_ratio ratio-reading note")
+    DELTA_NOTE = "pins the difference"
+    with open(os.path.join(HERE, "delta_three_component.in")) as fp:
+        three = fp.read()
+    out, _ = run(tmp, "three.in", three)
+    notes = [ln for ln in out.splitlines() if DELTA_NOTE in ln]
+    check("three-component mask at r = 0.8: exactly one note",
+          len(notes) == 1, f"{len(notes)} notes")
+    note = notes[0] if notes else ""
+    check("the note names the local ratio 0.3421 and the occupancy 23%",
+          "ratio there is 0.3421" in note and "fill 23% of the site" in note,
+          note)
+    check("the note gives the (1+d)/(1-d) inversion",
+          "(1+d)/(1-d)" in note, note)
+    with open(os.path.join(HERE, "delta_micelle.in")) as fp:
+        micelle = fp.read()
+    out, _ = run(tmp, "micelle.in", micelle)
+    check("binary mask at r != 1 (delta_micelle scan): silent",
+          count(out, DELTA_NOTE) == 0, f"{count(out, DELTA_NOTE)} notes")
+    r1 = three.replace("sys : NN : phi_ratio : 0.8",
+                       "sys : NN : phi_ratio : 1")
+    check("r = 1 edit applied", r1 != three)
+    out, _ = run(tmp, "three_r1.in", r1)
+    check("r = 1 with a dominant third component: silent",
+          count(out, DELTA_NOTE) == 0, f"{count(out, DELTA_NOTE)} notes")
 
 
 # ---- regula-falsi diagnostics on mock targets (pure Python, ms each) ------
