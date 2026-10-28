@@ -414,13 +414,15 @@ class LatticeND:
                     face = (a, "lo" if los[a] == 1 else "hi")
         return mask.ravel(), face
 
-    def moment(self, X, Xb, n, axis=0):
+    def moment(self, X, Xb, n, axis=0, weight=None):
         """n-th moment of (X - Xb) along `axis` (the radial/first axis by
         default), volume weighted -- e.g. the radial extent of an adsorbed
         layer. The coordinate is measured from the FIRST LAYER (offset
         subtracted on a radial axis), matching Lattice1D.moment / the Namics
         LGrad1 convention so 1D and N-D report the same moment for the same
-        physical density."""
+        physical density. `weight` (a full-length site mask, System.ksam)
+        restricts the sum to the free sites, as Lattice1D.moment (review
+        27 Oct 2026, #39)."""
         _, _, ctr, _ = self._axis_geom(axis)
         c = np.broadcast_to(ctr, self.pdims).astype(float)
         if self.roles[axis] == "r":
@@ -428,4 +430,6 @@ class LatticeND:
         Xg = X.reshape(self.pdims)
         Lg = self.L.reshape(self.pdims)
         w = (Xg[self.iv] - Xb) * Lg[self.iv]
+        if weight is not None:
+            w = w * np.asarray(weight).reshape(self.pdims)[self.iv]
         return float((c[self.iv] ** n * w).sum())

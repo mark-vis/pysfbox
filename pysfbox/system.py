@@ -1673,8 +1673,12 @@ class System:
             # boundary term +q_el*psi0/2 (the fixed-charge booking of that
             # charge); the constant-potential grand potential subtracts
             # the reservoir work q_el*psi0: net -q_el*psi0/2 at the
-            # electrode site. Then dOmega/dpsi0 = -sigma (Lippmann). Absent
-            # in Namics GetGrandPotential (review finding 3, 7 Oct 2026).
+            # electrode site. Then dOmega/dpsi0 = -sigma (Lippmann) when
+            # every molecule is free; in general dOmega/dpsi0 = -sigma -
+            # sum_i n_i dmu_i/dpsi0 (restricted molecules' mu move with
+            # psi0; REFERENCE.md e.psi0/kT, review #43). sigma itself is
+            # kal sys : electrode_charge. Absent in Namics
+            # GetGrandPotential (review finding 3, 7 Oct 2026).
             omega -= 0.5 * self.q_electrode * self.psi
             return omega
         omega *= self.ksam
@@ -1811,11 +1815,27 @@ class System:
         where f_ij is the fraction of molecule i made of segment type j, phibulk_j
         the bulk fraction of segment j, and the segment double-sum runs over all
         segment types (frozen surfaces drop out: their bulk fraction and molecule
-        fraction are both zero)."""
+        fraction are both zero).
+
+        An ABSENT molecule (free with phibulk 0, restricted with theta 0)
+        has mu = -inf (ln 0), printed '-inf' like Namics (oracle-verified;
+        the old 0.0 was indistinguishable from a genuine pure-component
+        mu = 0). A present molecule whose ln GN is not finite (a died or
+        unpropagated propagator) has no number: returns None, which the
+        kal lookup prints as NiN after a note (review 27 Oct 2026, #66)."""
         N = mol.N
         theta = mol.get_theta()
-        if theta <= 0 or not np.isfinite(mol.lnGN):
-            return 0.0
+        if theta <= 0:
+            return -np.inf
+        if not np.isfinite(mol.lnGN):
+            key = ("mu_lnGN", mol.name)
+            if key not in _WARN_NOTES:          # once per process
+                _WARN_NOTES.add(key)
+                print(f"  note: mol : {mol.name} : mu: ln GN is not finite "
+                      f"(theta {theta:.6g} > 0, so the molecule is present "
+                      "but its propagator did not give a finite weight) -> "
+                      "NiN")
+            return None
         mu = np.log(theta) - mol.lnGN + 1.0
         mu -= N * sum(m.phibulk / m.N for m in self.molecules.values())
         frac = {}
@@ -1870,6 +1890,10 @@ class System:
             return None, None
         for nm in self.X_mols:
             _t, n = self.get_value("mol", nm, "n")
+            if n == 0:
+                # an absent molecule: n mu = 0 (its mu is -inf, and
+                # 0 * -inf would be nan; review 27 Oct 2026, #66)
+                continue
             _t, mu = self.get_value("mol", nm, "mu")
             if n is None or mu is None:
                 return None, None
@@ -1877,10 +1901,15 @@ class System:
         for si, sj, host, n in self.X_states:
             st = next(st for sg in self.segments.values()
                       for st in sg.states if st.name == si)
+            count = n * self.lat.weighted_sum(st.phi)
+            if count == 0:
+                # no s_i units: the term is 0 whatever mu-<s_j> is (an
+                # absent host gives -inf; 0 * -inf = nan, review #66)
+                continue
             _t, mu = self.get_value("mol", host, "mu-" + sj)
             if mu is None:
                 return None, None
-            X -= n * self.lat.weighted_sum(st.phi) * mu
+            X -= count * mu
         return "real", float(X)
 
     # ---- output property lookup (kal) -----------------------------------------
@@ -1936,6 +1965,20 @@ class System:
         if key == "sys":
             if prop == "grand_potential":
                 return "real", self.grand_potential()
+            if prop == "electrode_charge":
+                # PySFBox extension (review #43, Oct 2026): sigma, the
+                # charge the fixed-potential electrode(s) took up from
+                # their battery, summed like grand_potential (planar: per
+                # unit area, in elementary charges per site area) -- the
+                # q_electrode the work term -q_el*psi0/2 and the Gauss
+                # audit book. dOmega/dpsi0 = -sigma only when every
+                # molecule is free; read sigma here, not from a derivative
+                if not (self.charged and getattr(self, "fixedPsi0", False)):
+                    print("  note: sys : electrode_charge: no fixed-"
+                          "potential electrode (mon : X : e.psi0/kT) in this "
+                          "system -> NiN")
+                    return None, None
+                return "real", self.lat.weighted_sum(self.q_electrode)
             # Laplace pressure, TWO-SIDED: -omega(first) + omega(last)
             # (laplace_pressure(); the same quantity the Laplace_pressure
             # search drives). DELIBERATE deviation from Namics PushOutput,
@@ -2036,9 +2079,12 @@ class System:
                 seg0 = m.seq[0]
                 for st in seg0.states:
                     if prop == f"mu-{st.name}":
-                        return "real", (self.chemical_potential(m)
-                                        + np.log(st.alphabulk))
+                        mu = self.chemical_potential(m)
+                        if mu is None:
+                            return None, None
+                        return "real", mu + np.log(st.alphabulk)
             theta = m.get_theta()
+            free_sites = self.lat.interior & (self.ksam > 0.5)
 
             def _gn():
                 # the propagators keep GN = exp(min(lnGN, 700)) (a display
@@ -2065,15 +2111,23 @@ class System:
                      "n": lambda: theta / m.N,
                      "N": lambda: m.N, "GN": _gn,
                      "chainlength": lambda: m.N,
-                     "phiMax": lambda: float(m.phi[self.lat.interior].max()),
+                     # extremes over the FREE sites: a frozen interior
+                     # site (phi = 0) is not part of the profile (review
+                     # 27 Oct 2026, #39; Namics takes every site)
+                     "phiMax": lambda: float(m.phi[free_sites].max()),
                      # Namics phiM = phitot[M-2*fjc]: phi at the last interior
                      # layer (the bulk/reservoir side), NOT the maximum.
                      "phiM": lambda: float(m.phi[self.lat.M - 2 * self.lat.fjc]
                                            if self.lat.gradients == 1
                                            else m.phi[self.lat.interior][-1]),
-                     "phiMin": lambda: float(m.phi[self.lat.interior].min())}
+                     "phiMin": lambda: float(m.phi[free_sites].min())}
             if prop in table:
                 v = table[prop]()
+                if v is None:
+                    # a recognised column without a value (mu of a present
+                    # molecule with a non-finite ln GN): NiN, its note
+                    # printed where it was decided
+                    return None, None
                 return ("int", v) if isinstance(v, int) else ("real", v)
         if key == "mon" and name in self.segments:
             s = self.segments[name]
@@ -2115,16 +2169,30 @@ class System:
             if prop == "phibulk":
                 return "real", phib
             if prop in ("1st_M_phi_z", "2nd_M_phi_z", "fluctuations", "RMS"):
-                # moments of the EXCESS profile, normalised by theta_exc.
-                # A uniform state has theta_exc = round-off and the ratio
-                # an O(box) number (Namics prints that garbage, dividing
+                # moments of the EXCESS profile over the FREE sites (ksam),
+                # normalised by that free-site excess Gamma. A frozen
+                # interior site (a frozen_range 1;1 wall, a frozen core)
+                # holds no mobile density; counting it as -phib of
+                # depleted volume, as Namics does (3e9eafd/7dfcb3c
+                # segment.cpp, unmasked Moment / theta - volume*phibulk),
+                # shifted <z> by the wall and could make the variance
+                # negative -- a deliberate deviation (review 27 Oct 2026,
+                # #39). The origin stays the box edge (the .pro x column);
+                # theta_exc keeps the box convention. Gamma = theta_exc
+                # minus the frozen sites' share, which is exactly 0.0 when
+                # no interior site is frozen (ghost walls: bit-identical).
+                gamma = theta_exc - lat.weighted_sum(
+                    (s.phi - phib) * (1.0 - self.ksam))
+                L_free = lat.L_sum - lat.weighted_sum(1.0 - self.ksam)
+                # A uniform state has Gamma = round-off and the ratio an
+                # O(box) number (Namics prints that garbage, dividing
                 # whenever theta_exc != 0 exactly); report nan instead
-                # when |theta_exc| is round-off relative to the amount.
+                # when |Gamma| is round-off relative to the amount.
                 # (review 7 Oct 2026, #62)
-                if abs(theta_exc) <= 1e-10 * max(theta, lat.L_sum * phib):
+                if abs(gamma) <= 1e-10 * max(theta, L_free * phib):
                     return "real", float("nan")
-                m1 = lat.moment(s.phi, phib, 1) / theta_exc
-                m2 = lat.moment(s.phi, phib, 2) / theta_exc
+                m1 = lat.moment(s.phi, phib, 1, weight=self.ksam) / gamma
+                m2 = lat.moment(s.phi, phib, 2, weight=self.ksam) / gamma
                 if prop == "1st_M_phi_z":
                     return "real", m1
                 if prop == "2nd_M_phi_z":
@@ -2133,8 +2201,14 @@ class System:
                     # M2 < 0 (an excess that changes sign): no real RMS;
                     # Namics' pow(M2, 0.5) prints nan here too
                     return "real", np.sqrt(m2) if m2 >= 0 else float("nan")
+                # a variance negative beyond round-off (a sign-changing
+                # excess) has no real width: nan, like RMS. Namics clamps
+                # it to 0, a plausible-looking width (review 27 Oct 2026,
+                # #74); round-off below zero still prints 0
                 fl = m2 - m1 * m1
-                return "real", np.sqrt(fl) if fl > 0 else 0.0
+                if fl < -1e-12 * max(abs(m2), m1 * m1, 1.0):
+                    return "real", float("nan")
+                return "real", float(np.sqrt(max(fl, 0.0)))
         # no match: the ONLY 'unknown' return (a gated, recognised column
         # returns (None, None) above)
         return "unknown", None

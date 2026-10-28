@@ -847,7 +847,10 @@ class Molecule:
         elif self.freedom == "restricted":
             if not np.isfinite(self.lnGN):
                 raise FloatingPointError(f"mol {self.name}: GN <= 0")
-            lnC = np.log(self.theta / N) - self.lnGN
+            # theta 0 (an absent restricted molecule): lnC = -inf without
+            # a log(0) RuntimeWarning; handled as zero density below
+            lnC = (np.log(self.theta / N) - self.lnGN
+                   if self.theta > 0 else -np.inf)
             # phibulk (the implied bulk density theta/GN, or 0 when grafted)
             # is owned and updated per iteration by System.compute_phis
         else:
