@@ -5,9 +5,9 @@ import os
 import numpy as np
 
 from .inputreader import (_copy, _suggest, get_blocks, last, read_input,
-                          set_value)
+                          set_value, substitute_aliases)
 from .output import kal_path, pro_path, write_kal, write_pro
-from .system import InputAuditError, System
+from .system import InputAuditError, System, _layer_count
 
 
 def _num(s):
@@ -320,7 +320,66 @@ def _resolve_scan_param(settings, key, name, prop):
             f"var : {key}-{name} : scan : {prop}: '{prop}' is not a "
             f"parameter PySFBox reads under '{key}'"
             f"{_suggest(prop, known)} -- the scan would change nothing")
+    if key == "lat" and prop.startswith("n_layers"):
+        # only the layer counts of the block's own dimensionality are read:
+        # a scan of the other spelling wrote identical rows under changing
+        # labels (review 27 Oct 2026, #7; Namics refuses an n_layers var
+        # target on gradients > 1 too, lattice.cpp:608-622)
+        lp = settings.get(("lat", name), {})
+        counts = _layer_keys(lp)
+        if prop not in counts:
+            g = int(float(last(lp, "gradients", 1)))
+            raise ValueError(
+                f"var : {key}-{name} : scan : {prop}: the box size of a "
+                f"gradients : {g} lattice is {' / '.join(counts)} -- "
+                f"{prop} is not read there")
     return prop
+
+
+def _layer_keys(lp):
+    """The layer-count keys a lat block's gradient count reads."""
+    g = int(float(last(lp, "gradients", 1)))
+    return (["n_layers"] if g == 1 else ["n_layers_x", "n_layers_y"]
+            + (["n_layers_z"] if g == 3 else []))
+
+
+def _check_layer_grid(settings, plan):
+    """Pre-flight of a scan that drives a box size through an ALIAS
+    (`n_layers : #H#`, `n_layers_x : #H#`, ...) or an exponential
+    schedule: substitute every planned value and read the resulting layer
+    count the way the System will, so a non-whole rung raises BEFORE step
+    0 -- not at that rung, after rows were written (review 27 Oct 2026,
+    #42). Every lat block is checked with the layer keys its gradient
+    count reads."""
+    key, name, prop, values = plan
+    if key == "lat" and prop.startswith("n_layers"):
+        if all(float(v).is_integer() for v in values):
+            return                        # whole layers: the System checks
+        checks = [(i, v, name, prop, str(v)) for i, v in enumerate(values)]
+    elif key == "alias":
+        checks = []
+        for i, v in enumerate(values):
+            # the scan writes the alias value exactly like this (set_value)
+            trial = dict(settings)
+            trial[("alias", name)] = dict(settings[("alias", name)])
+            trial[("alias", name)]["value"] = [str(v)]
+            for bn, lp in get_blocks(settings, "lat"):
+                for k in _layer_keys(lp):
+                    text = last(lp, k)
+                    if text is None or "#" not in text:
+                        continue
+                    checks.append((i, v, bn, k,
+                                   substitute_aliases(text, trial)))
+    else:
+        return
+    for i, v, bn, k, text in checks:
+        try:
+            _layer_count(text, k)
+        except ValueError as e:
+            raise ValueError(
+                f"var : {key}-{name} : scan : {prop}: step {i} "
+                f"({key} {name} = {v}) sets lat : {bn} : {k} to "
+                f"{text}: {e}") from None
 
 
 def _var_plan(settings):
@@ -760,6 +819,8 @@ def run_file(path, verbose=True):
         newton = _newton_options(settings)
         plan = _var_plan(settings)
         has_var = plan is not None
+        if has_var:
+            _check_layer_grid(settings, plan)
         steps = plan[3] if has_var else [None]
 
         x_scan_prev = None

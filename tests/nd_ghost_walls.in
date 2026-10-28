@@ -1,0 +1,58 @@
+// N-D GHOST WALLS on every face kind (review 27 Oct 2026):
+// Namics' per-axis frozen_range tokens -- a coordinate may be lowerbound
+// (= 0), upperbound (= n + 1), firstlayer, lastlayer or an integer in
+// 0..n+1 -- with a full face in the ghost plane 0 / n+1 being a wall in the
+// boundary layer. Before the fix PySFBox read the per-axis tokens with a
+// bare int() and sliced the coordinates 0 / n+1 into the ghost plane
+// without a wall, so no wall could sit on a y (or z) face at all. A 10x6
+// flat box with three different walls, one per spelling: x-lo
+// `lowerbound,1;lowerbound,6` (weakly attractive), y-lo
+// `1,lowerbound;10,lowerbound` (attractive), y-hi `1,7;10,7` (the numeric
+// ghost coordinate, mildly attractive); x-hi is a mirror. Genuinely 2-D
+// (the corner at x-lo/y-lo).
+// ORACLE: the compiled Namics with `lat : NN : stencil_full : false` (its
+// 2-D default is the 9-point stencil; PySFBox is the 5-point one) on the
+// same input agrees to theta 4e-12, Omega 1e-9 relative, F 4e-11 and the
+// profiles to 2e-11. Under its 9-point default Namics gets the y-face
+// ghost wall itself wrong (an x-dependent wall row: the corner ghosts are
+// not mirrored in x), so the comparison needs stencil_full : false for
+// that reason too. The reductions (an x-uniform y-face wall == 10 x the
+// 1-gradient wall, the 2-D cylindrical and 3-D z faces) and the refusals
+// (partial ghost patch, ghost + interior span, two ghost axes, a ghost
+// wall on a mirror face) are in tests/input_guards.py [R27 #28].
+lat : NN : gradients : 2
+lat : NN : geometry : flat
+lat : NN : n_layers_x : 10
+lat : NN : n_layers_y : 6
+lat : NN : lowerbound_x : surface
+lat : NN : upperbound_x : mirror
+lat : NN : lowerbound_y : surface
+lat : NN : upperbound_y : surface
+mon : S1 : freedom : frozen
+mon : S1 : frozen_range : lowerbound,1;lowerbound,6
+mon : S : freedom : frozen
+mon : S : frozen_range : 1,lowerbound;10,lowerbound
+mon : S2 : freedom : frozen
+mon : S2 : frozen_range : 1,7;10,7
+mon : A : freedom : free
+mon : A : chi_S : -1
+mon : A : chi_S1 : -0.3
+mon : A : chi_S2 : -0.5
+mon : W : freedom : free
+mon : A : chi_W : 0.4
+mol : pol : composition : (A)10
+mol : pol : freedom : free
+mol : pol : phibulk : 0.01
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+newton : NN : tolerance : 1e-10
+output : kal : append : false
+kal : mol : pol : theta
+kal : mol : pol : theta_exc
+kal : mol : pol : mu
+kal : sys : NN : grand_potential
+kal : sys : NN : free_energy
+output : pro : append : false
+pro : mon : A : phi
+pro : mon : W : phi
+start

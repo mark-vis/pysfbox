@@ -75,8 +75,9 @@ solves wrongly, raise with an explanation instead of running.
   `periodic`); one unified finite-volume lattice handles every geometry.
 - **mon**: `freedom` free / frozen / pinned, `frozen_range` / `pinned_range`
   (1-gradient `1;3`, `lowerbound`, `upperbound`, `firstlayer`, `lastlayer`;
-  2D/3D box grammar `xlo,ylo[,zlo];xhi,yhi[,zhi]`), `chi_X` interaction
-  parameters.
+  2D/3D box grammar `xlo,ylo[,zlo];xhi,yhi[,zhi]` with Namics' per-axis
+  tokens, so `1,lowerbound;10,lowerbound` = `1,0;10,0` = `lowerbound_y` is a
+  wall on the lower y face), `chi_X` interaction parameters.
 - **mol**: linear multi-block compositions `(X)1(A)200(G)1` AND **branched
   architectures** — bracket side chains `(C)18[(O)1](O)1...` (nestable;
   several `[..][..]` on one node), symmetric dendrimers/stars
