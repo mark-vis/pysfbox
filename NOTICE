@@ -23,10 +23,9 @@ sfbox/Namics. The original algorithm and C/C++ source are:
     Frans Leermakers, Wageningen Agricultural University, NL.
     Copyright (2018) Wageningen University, NL.
 
-That file carries the original Wageningen University copyright and reproduction
-notice in its own header, which governs that file; it is included in PySFBox
-with the permission of the copyright holders. The remainder of PySFBox is under
-the GPL-3.0-or-later terms in LICENSE.
+With the agreement of F.A.M. Leermakers (2026), the translation is released
+under the same GPL-3.0-or-later terms as the rest of PySFBox (see LICENSE); its
+file header keeps the attribution above.
 
 The Namics code itself is distributed by its authors under permissive terms
 ("the 'namics' code can freely be used"); when results of Namics or PySFBox are

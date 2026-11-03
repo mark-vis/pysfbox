@@ -27,8 +27,8 @@ pip install numpy
 python -m pysfbox my_input.in        # run from the folder that contains pysfbox/
 ```
 
-GPL-3.0-or-later (see `LICENSE` and `NOTICE`; `pysfbox/sfnewton.py` carries its
-own Wageningen copyright notice and governing terms).
+GPL-3.0-or-later (see `LICENSE` and `NOTICE`; `pysfbox/sfnewton.py` keeps its
+Wageningen attribution).
 
 Regression tests: `python tests/run_tests.py`. The `tests/` folder doubles as
 an example collection — every supported feature has a small, commented `.in`
@@ -293,9 +293,9 @@ lattice theory as realised in **sfbox/Namics** by F.A.M. Leermakers and the
 Physical Chemistry group at Wageningen University — the input/output formats,
 property names, and numerical conventions all follow Namics so that existing
 material keeps working. `pysfbox/sfnewton.py` is a Python translation of
-Namics' `sfnewton.cpp` and carries the original Wageningen University
-copyright and reproduction notice in its file header, which governs that
-file. Many thanks to Frans Leermakers for sfbox and Namics — the theory and
+Namics' `sfnewton.cpp`; it keeps the original Wageningen University
+attribution and, with Frans Leermakers' agreement, is GPL-3.0-or-later like
+the rest. Many thanks to Frans Leermakers for sfbox and Namics — the theory and
 the code that PySFBox builds on — and for discussions along the way.
 
 PySFBox itself is licensed under the GNU General Public License v3.0 or later
