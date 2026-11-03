@@ -7,11 +7,11 @@
         C++ translation: Peter Barneveld; masked/vector adaptation: Frans
         Leermakers, Wageningen Agricultural University, NL.
         C  Copyright (2018)  Wageningen University, NL.
-        *NO PART OF THIS WORK MAY BE REPRODUCED, EITHER ELECTRONICALLY OR OTHERWISE*
 
     Python/NumPy translation for PySFBox (2026), by Mark Vis, TU/e.
-    Distributed only with permission of the copyright holders; the original
-    copyright and the reproduction notice above are carried over unchanged.
+    Released under the same license as the rest of PySFBox
+    (GPL-3.0-or-later, see LICENSE and NOTICE) with the agreement of
+    F.A.M. Leermakers (2026); the attribution above is kept.
 
 The method keeps an approximate Hessian H in Gill-Murray LDL^T factored form
 (references in sfnewton.cpp: Gill & Murray, NPL reports 1972-76; Shanno 1978).
