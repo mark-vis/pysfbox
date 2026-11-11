@@ -83,11 +83,15 @@ kal : sys : NN : kJ0
 kal : sys : NN : X
 kal : sys : NN : kJ0x
 """
-# a spherical droplet on a frozen core whose far side is NOT at omega = 0
-# (restricted (A)20 in a 14-layer box): the two-sided Laplace_pressure note
+# a spherical box with a frozen core whose far side is NOT at omega = 0
+# (restricted (A)20 in a 24-layer box; the A-rich phase sits at the outer
+# bound, the core is in a flat dilute plateau): the two-sided
+# Laplace_pressure note. (Until 11 Nov 2026 a 14-layer box with theta
+# 1500: its 3-layer shell on the core has no density plateau, which the
+# plateau reader now refuses -> NiN.)
 DROPLET = """
 lat : NN : geometry : spherical
-lat : NN : n_layers : 14
+lat : NN : n_layers : 24
 lat : NN : lowerbound : mirror
 lat : NN : upperbound : mirror
 mon : C : freedom : frozen
@@ -98,7 +102,7 @@ mon : A : chi_C : -3
 mon : A : chi_W : 1.2
 mol : A : composition : (A)20
 mol : A : freedom : restricted
-mol : A : theta : 1500
+mol : A : theta : 12000
 mol : W : composition : (W)1
 mol : W : freedom : solvent
 newton : n : tolerance : 1e-9
@@ -178,6 +182,13 @@ with tempfile.TemporaryDirectory() as tmp:
           count(lp2, LP_NOTE) == 1)
     check("the two files print the same Laplace_pressure",
           r1[1] == r2[1], f"{r1[1]} / {r2[1]}")
+
+    print("[start] the Laplace_pressure plateau-site note, once per start")
+    with open(os.path.join(HERE, "laplace_core.in")) as fp:
+        cored = fp.read()
+    out, _ = run(tmp, "laplace_core.in", cored)
+    n = count(out, "omega is read at the bulk plateau past it")
+    check("three starts, three notes", n == 3, f"{n}")
 
     print("[delta] the phi_ratio ratio-reading note")
     DELTA_NOTE = "pins the difference"

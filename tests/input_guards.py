@@ -26,7 +26,8 @@ snap, [F44] alphabulk anchors, [F25] the range keyword follows the freedom,
 [F56] missing n_layers/composition, [F57] numbers and alias scope
 (newton/sys substitution, the unparseable-newton-value warning); [E] a
 fixed-potential electrode on a refined lattice is refused at build, not
-as an 'interior electrode' at the first residual (28 Oct 2026).
+as an 'interior electrode' at the first residual (28 Oct 2026); [O] two
+frozen segments whose interior frozen_range values overlap (11 Nov 2026).
 """
 import contextlib
 import io
@@ -181,6 +182,25 @@ raises("lowerbound wall with the default mirror bound",
 raises("two walls in the same ghost layer",
        WALL + "mon : T : freedom : frozen\nmon : T : frozen_range : "
        "lowerbound\n", ValueError, ["Overpopulated"])
+
+print("[O] overlapping interior frozen ranges")
+INNER = sub(WALL, "lat : flat : lowerbound : surface\n", "").replace(
+    "frozen_range : lowerbound", "frozen_range : 1;2")
+raises("S on 1;2 and T on 2;2 share layer 2",
+       INNER + "mon : T : freedom : frozen\nmon : T : frozen_range : 2;2\n",
+       ValueError, ["overlap", "'S'", "'T'", "layer 2"])
+builds("S on 1;2 and T on 3;3 (adjacent, no overlap)",
+       INNER + "mon : T : freedom : frozen\nmon : T : frozen_range : 3;3\n")
+raises("2-D: two frozen boxes sharing a cell",
+       """
+lat : flat : gradients : 2
+lat : flat : n_layers_x : 10
+lat : flat : n_layers_y : 3
+lat : flat : geometry : flat
+""" + WALL.split("lat : flat : lowerbound : surface\n")[1].replace(
+           "frozen_range : lowerbound", "frozen_range : 1,1;2,3")
+       + "mon : T : freedom : frozen\nmon : T : frozen_range : 2,2;2,2\n",
+       ValueError, ["overlap", "cell (2, 2)"])
 ND = """
 lat : flat : gradients : 2
 lat : flat : n_layers_x : 10
@@ -479,6 +499,25 @@ for label, last in (("thin-shell kal Laplace_pressure is NiN", ""),
     else:
         check(label, err is None and len(rows) == 2
               and rows[1][1] == "NiN", f"{err!r} {rows}")
+# the plateau past a frozen block must be flat in DENSITY too: a
+# stationary point of an oscillating omega tail (a film released on a
+# wall) is no bulk plateau (11 Nov 2026). Synthetic two-phase state on
+# the box above: the same omega profile, with and without a density
+# ripple on the inner phase
+import numpy as _np  # noqa: E402
+_s = build(THIN.format(last=""))
+_k = _np.arange(_s.lat.M)
+_sites = _k[5:30]                       # free sites past the 1;4 core
+_gpd = _np.where(_k < 20, -0.05, 0.0)
+_gpd[8] = -0.0501                       # one stationary site at layer 9
+for _amp, _label, _want in (
+        (0.0, "flat densities: the plateau site is accepted", True),
+        (7e-3, "density ripple 7e-3 around it: no plateau", False)):
+    _oil = _np.where(_k < 20, 0.9 + _amp * (-1.0) ** _k, 0.05)
+    _s.molecules["oil"].phi = _oil
+    _s.molecules["W"].phi = 1.0 - _oil
+    _i = _s._core_plateau_site(_gpd, _sites)
+    check(_label, (_i is not None) == _want, f"site {_i}")
 
 print("[R27] review 27 Oct 2026: N-D guards and grammar")
 import numpy as np  # noqa: E402

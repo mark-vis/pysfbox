@@ -93,6 +93,9 @@ def fd_jacobian(residual, x, g=None):
 # run (`pysfbox a.in b.in`, notebook loops)
 _WARN_NOTES = set()
 
+# once-per-START notes (tags), cleared by runner._reset_start_notes
+_START_NOTES = set()
+
 
 def _layer_count(text, key):
     """A layer count from the input: an integer (a whole float such as
@@ -537,6 +540,22 @@ class System:
                     "surface (Namics: 'Overpopulated surface')")
         interior = lat.interior.astype(float)
         solid = sum((s.range_mask for s in self.frozen), np.zeros(lat.M))
+        # the same for interior frozen ranges: two frozen segments on one
+        # site would give it frozen density 2
+        over = np.nonzero(lat.interior & (solid > 1))[0]
+        if over.size:
+            i = int(over[0])
+            names = [s.name for s in self.frozen if s.range_mask[i]]
+            cell = [(int(c) - lat.fjc) // lat.fjc + 1 for c in
+                    (np.unravel_index(i, lat.pdims) if lat.gradients > 1
+                     else (i,))]
+            where = (f"layer {cell[0]}" if len(cell) == 1 else
+                     "cell (" + ", ".join(map(str, cell)) + ")")
+            raise ValueError(
+                f"frozen segments {names} overlap: their frozen_range "
+                f"values both cover {where} ({over.size} "
+                "overlapping site(s)); every site holds at most one frozen "
+                "segment (Namics: 'Overpopulated')")
         self.ksam = interior * (1.0 - np.minimum(solid, 1.0))  # free sites
         for s in self.frozen:
             s.phi = s.range_mask.astype(float).copy()
@@ -1604,7 +1623,8 @@ class System:
           when that variation is at most 10 % of |omega(i)| plus 1e-6 of
           the largest |omega| on the free sites -- an outer bulk sits at
           omega ~ 0, where the relative test alone would reject solver
-          noise.
+          noise -- and every density is flat to 1e-3 within 2 layers of
+          it (an oscillating omega tail has stationary points too).
         None: no plateau (a thin shell or film around the core)."""
         skip = self.lat.fjc + 1
         if len(sites) < skip + 3:
@@ -1629,6 +1649,16 @@ class System:
         scale = float(np.abs(gpd[sites]).max())
         if not one_phase and var[j] > 0.1 * abs(gpd[i]) + 1e-6 * scale:
             return None                   # layered, not a bulk plateau
+        if not one_phase:
+            # a stationary point of an oscillating omega tail is no
+            # plateau: every density must also be flat (to 1e-3) over
+            # 2 layers (2 fjc sites) on each side of the candidate
+            h = 2 * self.lat.fjc
+            pos = skip + j                # cand[j] == sites[skip + j]
+            near = sites[max(0, pos - h):pos + h + 1]
+            for m in self.molecules.values():
+                if float(np.abs(m.phi[near] - m.phi[i]).max()) > 1e-3:
+                    return None
         return i
 
     @staticmethod
@@ -2042,8 +2072,8 @@ class System:
                               "film around the core?): the pressure "
                               "difference is undefined -> NiN")
                         return None, None
-                    if "laplace_frozen_end" not in _WARN_NOTES:
-                        _WARN_NOTES.add("laplace_frozen_end")
+                    if "laplace_frozen_end" not in _START_NOTES:
+                        _START_NOTES.add("laplace_frozen_end")
                         xs = ", ".join(
                             f"x = {lat.offset + lat.z_phys[i - lat.fjc]:g}"
                             f" (omega {gpd[i]:.6e}, local variation "
@@ -2055,7 +2085,8 @@ class System:
                               f"layer is frozen (a core or wall block), so "
                               f"omega is read at the bulk plateau past it: "
                               f"{xs}. Namics reads the frozen layer itself "
-                              f"(omega = 0 there). Note printed once")
+                              f"(omega = 0 there). Note printed once per "
+                              f"start")
                 if (abs(w_last) > max(1e-7, 1e-4 * abs(dp))
                         and "laplace_two_sided" not in _WARN_NOTES):
                     _WARN_NOTES.add("laplace_two_sided")

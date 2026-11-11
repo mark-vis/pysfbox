@@ -21,6 +21,15 @@ def _reset_file_notes():
     system._WARN_NOTES.clear()
 
 
+def _reset_start_notes():
+    """Forget the once-per-START notes (system._START_NOTES): a note
+    that names a site of this start's state (the Laplace_pressure plateau
+    past a frozen block) is printed once per start, not once per scan
+    step or search probe."""
+    from . import system
+    system._START_NOTES.clear()
+
+
 def _num(s):
     """Parse a Namics numeric field the way Namics' Input::Get_Real does:
     a value is numeric only if it starts with a digit (or '-' then a digit).
@@ -1161,6 +1170,7 @@ def run_file(path, verbose=True):
     outputs = _Outputs(base, path,
                        [f"{k}:{n}:{p}" for k, n, p in kal_columns])
     for start_i, settings in enumerate(calculations, 1):
+        _reset_start_notes()
         kal_specs = kal_columns if _output_specs(settings, "kal") else []
         pro_specs = _output_specs(settings, "pro")
         pro_bounds = _pro_write_bounds(settings)
