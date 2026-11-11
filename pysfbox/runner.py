@@ -6,7 +6,8 @@ import numpy as np
 
 from .inputreader import (_copy, _suggest, get_blocks, last, read_input,
                           set_value, substitute_aliases)
-from .output import kal_path, pro_path, write_kal, write_pro
+from .output import (collect_kal, collect_pro, kal_path, pro_path,
+                     write_kal, write_pro)
 from .system import InputAuditError, System, _layer_count
 
 
@@ -83,6 +84,45 @@ def _output_specs(settings, kind):
                 else:
                     specs.append((name, param, v))
     return specs
+
+
+class _Outputs:
+    """The kal/pro output of one input file: the Namics text files and/or
+    the experimental `.sfbz` container (`output : sfbz : write : true`,
+    sfbz.py). Each property is evaluated once and handed to both."""
+
+    def __init__(self, base, input_path, kal_labels):
+        self.base, self.input_path = base, input_path
+        self.kal_labels = kal_labels
+        self.kal_started = False
+        self.container = None
+
+    def write(self, settings, system, start, step, kal_specs, pro_specs,
+              pro_file, pro_bounds, scan=None, kal_only=False):
+        from . import sfbz        # lazy: `python -m pysfbox.sfbz`
+        on, text, compress = sfbz.options(settings)
+        text = text or not on
+        row = collect_kal(kal_specs, system) if kal_specs else None
+        data = (collect_pro(pro_specs, system, pro_bounds)
+                if pro_specs and not kal_only else None)
+        if row is not None and text:
+            write_kal(kal_path(self.base), kal_specs, system,
+                      new_file=not self.kal_started, row=row)
+            self.kal_started = True
+        if data is not None and text:
+            write_pro(pro_file, pro_specs, system, data=data)
+        if on and (row is not None or data is not None):
+            if self.container is None:
+                self.container = sfbz.Writer(
+                    self.base, self.input_path, self.kal_labels,
+                    compress=compress)
+            self.container.add(start, step, system, kal_row=row, pro=data,
+                               pro_name=os.path.basename(pro_file),
+                               scan=scan)
+
+    def close(self):
+        if self.container is not None:
+            self.container.close()
 
 
 def _pro_write_bounds(settings):
@@ -1088,7 +1128,6 @@ def run_file(path, verbose=True):
     calculations = read_input(path)
     _check_first_start(calculations[0])
     base = os.path.splitext(path)[0]
-    kal_started = False
     system = None
     n_starts = len(calculations)
 
@@ -1119,6 +1158,8 @@ def run_file(path, verbose=True):
     # 6 Oct 2026, #44). A start still writes a row only once kal output is
     # declared (as in Namics: no row for starts before the first kal line).
     kal_columns = _output_specs(calculations[-1], "kal")
+    outputs = _Outputs(base, path,
+                       [f"{k}:{n}:{p}" for k, n, p in kal_columns])
     for start_i, settings in enumerate(calculations, 1):
         kal_specs = kal_columns if _output_specs(settings, "kal") else []
         pro_specs = _output_specs(settings, "pro")
@@ -1285,11 +1326,9 @@ def run_file(path, verbose=True):
                 dnote = system.delta_ratio_note()
                 if dnote:
                     print(dnote)
-            if kal_specs:
-                write_kal(kal_path(base), kal_specs, system,
-                          new_file=not kal_started)
-                kal_started = True
-            if pro_specs:
-                p = pro_path(base, n_starts, start_i, subl, has_var)
-                write_pro(p, pro_specs, system, write_bounds=pro_bounds)
+            outputs.write(
+                settings, system, start_i, subl, kal_specs, pro_specs,
+                pro_path(base, n_starts, start_i, subl, has_var), pro_bounds,
+                scan=(tag.strip(" []").split(" = ") if tag else None))
+    outputs.close()
     return system

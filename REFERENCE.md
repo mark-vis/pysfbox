@@ -1245,6 +1245,58 @@ pro : sys : NN : psi
 | `write_bounds` | true / false | false | On `pro` only: also emit the `fjc` ghost (boundary) layers, filled per the boundary condition (Namics `LGrad1::PutProfiles`). false = interior layers only. Ignored for N-D (2D/3D) lattices. |
 | `append` | true / false | — | **Accepted but never read.** PySFBox always writes a fresh `.kal` per run (see file semantics below) and a fresh `.pro` per dump. Kept only so Namics-style inputs parse; the value has no effect. |
 
+### The `.sfbz` container (PySFBox extension)
+
+`output : sfbz : write : true` writes ONE binary file `<base>.sfbz` per
+input, holding what the `.kal` and all `.pro` files of the run hold: the
+same `kal :` / `pro :` spec lines, the raw float64 values, plus the input
+file's text, the PySFBox version and, per calculation, the lattice, the
+iteration count, the residual and the scanned value. It is written next
+to the text files, or instead of them with `text : false`. Like every
+setting it takes effect from the start block that declares it. `.dist`
+and `.sk` stay text.
+
+| param | values | default | meaning |
+|---|---|---|---|
+| `write` | true / false | true once an `output : sfbz` line exists | Write `<base>.sfbz`. |
+| `text` | true / false | true | false = skip the `.kal` / `.pro` text files (the container can regenerate them, see below). |
+| `compress` | true / false | true | false = store the arrays uncompressed (larger, faster). |
+
+The file is a zip archive of NumPy `.npy` arrays and JSON, so it needs
+nothing beyond NumPy and is also readable without PySFBox:
+`numpy.load("base.sfbz")["1/0/pro"]` (members `<start>/<step>/kal`,
+`pro`, `x`[, `y`, `z`]; `header.json`, `<start>/<step>/step.json`).
+Profiles keep their shape: `(columns, sites)` on one gradient,
+`(columns, nx, ny[, nz])` on two or three, with one coordinate array per
+axis.
+
+```python
+from pysfbox import sfbz
+r = sfbz.load("base.sfbz")
+r.kal["sys:NN:grand_potential"]      # one value per calculation
+p = r.profile(start=1, step=3)       # p.x, p["mol:A:phi"]
+s = r.stack("mol:A:phi")             # a scan as one array: s.values
+                                     #   (steps, sites), s.x, s.scan
+r.frame()                            # kal table as a pandas DataFrame
+c = sfbz.load_many("ladder_*.sfbz")  # several files as one table:
+c.kal[...], c.file, c.stack(...)     #   c.frame()
+```
+
+`stack` refuses calculations on different grids (a box-size scan);
+`s.scan` holds the DECLARED scan values. `frame()` needs pandas, nothing
+else does (`columns()` gives the same table as arrays). Command line:
+
+```
+python -m pysfbox.sfbz base.sfbz                 one line per calculation
+python -m pysfbox.sfbz base.sfbz --export [DIR]  write the .kal/.pro text
+python -m pysfbox.sfbz base.sfbz --repair        after a killed run
+```
+
+`--export` reproduces the text files byte for byte. A run that is KILLED
+(not one that stops on an error) can leave a file that zip tools and
+`numpy.load` refuse; `sfbz.load` still reads every complete calculation
+from it and `--repair` rewrites it as a proper archive.
+
 ### Spec-line details
 
 - **`*` wildcard** — `kal : mol : * : theta` / `pro : mon : * : phi` expands to

@@ -78,7 +78,8 @@ SKIP = {"polad.in", "Two_brushes_interactingSurfaceBC.in"}
 GUARD_SCRIPTS = (("input_guards", "all guards raise"),
                  ("compare_guards", "all comparator verdicts as expected"),
                  ("message_guards", "console notes and search diagnostics "
-                  "as expected"))
+                  "as expected"),
+                 ("sfbz_roundtrip", ".sfbz container == text output"))
 
 
 def _field(v, strings):
