@@ -24,16 +24,26 @@ Design rules.
   it WITHOUT PySFBox (`d["1/0/pro"]`), and so does any zip tool plus any
   npy reader (Julia NPZ.jl, MATLAB readNPY, R RcppCNPy).
 - Append-only and crash-safe: each finished calculation is appended;
-  the archive's directory is written out (`sync`) whenever the previous
-  sync is more than SYNC_SECONDS old, at the end of the run and when the
-  writer is dropped by an exception. A process KILLED between two syncs
-  leaves a file without directory (zip appends over the old one); the
-  Reader then reads the members back from their local headers
-  (`_recover`: every complete calculation, typically all but the one
-  being written) and `--repair` rewrites the file for other tools. (Closing after EVERY
-  step was measured first: the directory rewrite is O(members), 23 s for
-  a 2000-step scan against 1.9 s for the text files.) Nothing is ever
-  rewritten.
+  the archive's directory is written out (`sync`) at the end of an
+  `add` when the previous sync is more than SYNC_SECONDS old OR the
+  calculation was slow compared with a sync (more than SYNC_COST_FACTOR
+  x the measured sync cost since the previous `add`; the first one
+  counts as slow), at the end of the run (also when it ends in an
+  exception) and when the writer is garbage-collected. Nothing runs
+  during a solve (no thread, no timer), so the window in which the file
+  on disk has no directory is: from an `add` that did not sync -- a
+  calculation shorter than SYNC_COST_FACTOR x the sync cost, within
+  SYNC_SECONDS of the last sync -- until the next `add` or the end of the
+  run, i.e. at most one solve; a run of slow calculations syncs after
+  every one, with an overhead below ~1/SYNC_COST_FACTOR of the run time.
+  A process KILLED in that window leaves a file without directory (zip
+  appends over the old one); the Reader then reads the members back from
+  their local headers (`_recover`: every complete calculation, typically
+  all but the one being written; a member whose header is still
+  zipfile's provisional one is incomplete) and `--repair` rewrites the
+  file for other tools. (Closing after EVERY step was measured first: the
+  directory rewrite is O(members), 23 s for a 2000-step scan against
+  1.9 s for the text files.) Nothing is ever rewritten.
 - Lossless and Namics-compatible: `export_text` regenerates the `.kal`
   and every `.pro` BYTE-identically to the text writers (same
   output.format_kal_row / write_pro_text), so the text formats stay the
@@ -53,7 +63,9 @@ Reading:
     r = sfbz.load("base.sfbz")
     r.kal["sys:NN:grand_potential"]          # one value per calculation
     p = r.profile(start=1, step=3)           # p.x, p["mol:A:phi"]
-    r.export_text()                          # base.kal, base_*.pro
+    r.export_text()                          # base.kal, base_*.pro (named
+                                             #   after the container; keeps
+                                             #   differing files, see doc)
     s = r.stack("mol:A:phi")                 # a whole scan as one array:
     plt.plot(s.x, s.values.T)                #   s.values (steps, sites),
                                              #   s.scan the scanned values
@@ -85,6 +97,11 @@ import numpy as np
 FORMAT = "pysfbox-sfbz"
 VERSION = 1
 SYNC_SECONDS = 2.0
+# a sync is also written after any calculation that took longer than
+# SYNC_COST_FACTOR x the measured cost of a sync (directory write + the
+# reopen it implies): the sync overhead stays below ~1/SYNC_COST_FACTOR of
+# the run time, so fast scans do not go quadratic
+SYNC_COST_FACTOR = 20.0
 
 _KIND = {"real": "r", "int": "i", "string": "s", "nin": "n"}
 _KIND_BACK = {v: k for k, v in _KIND.items()}
@@ -94,15 +111,28 @@ def sfbz_path(base):
     return base + ".sfbz"
 
 
+_TRUE = ("true", "1", "yes")
+_FALSE = ("false", "0", "no")
+
+
 def options(settings):
-    """(write, text, compress) from the `output : sfbz : ...` block."""
+    """(write, text, compress) from the `output : sfbz : ...` block. A
+    value that is neither true nor false raises (a typo such as
+    `text : flase` must not silently drop the text output)."""
     from .inputreader import get_blocks, last
 
     def flag(params, key, default):
         v = last(params, key)
         if v is None:
             return default
-        return str(v).strip().lower() in ("true", "1", "yes")
+        s = str(v).strip().lower()
+        if s in _TRUE:
+            return True
+        if s in _FALSE:
+            return False
+        raise ValueError(
+            f"output : sfbz : {key} : {v} -- not a true/false value "
+            f"(accepted: {' / '.join(_TRUE)} or {' / '.join(_FALSE)})")
 
     for name, params in get_blocks(settings, "output"):
         if name == "sfbz":
@@ -142,18 +172,28 @@ class Writer:
                   "input_file": (os.path.basename(input_path)
                                  if input_path else None),
                   "input_text": text,
-                  "kal_labels": list(kal_labels)}
+                  "kal_labels": list(kal_labels),
+                  # the stem the text files are named after (export_text
+                  # renames them after a renamed container)
+                  "base": os.path.basename(base)}
         with zipfile.ZipFile(self.path, "w", self.compress) as z:
             z.writestr("header.json", json.dumps(header, indent=1))
         self._holder = [None]
         self._synced = time.monotonic()
+        self._last_add = None       # end of the previous add
+        self._sync_cost = 0.0       # duration of the last close
+        self._reopen_cost = 0.0     # ... and of the reopen after it
         weakref.finalize(self, _close, self._holder)
 
     def sync(self):
         """Write the archive directory: everything added so far is on
         disk and readable."""
+        t = time.monotonic()
+        was_open = self._holder[0] is not None
         _close(self._holder)
         self._synced = time.monotonic()
+        if was_open:
+            self._sync_cost = self._synced - t
 
     close = sync
 
@@ -164,10 +204,11 @@ class Writer:
         the .pro text file this dump has / would have; scan: (label,
         value) of the var step."""
         lat = system.lat
+        res = float(getattr(system, "residual_norm", float("nan")))
         meta = {"start": int(start), "step": int(step),
                 "iterations": int(getattr(system, "iterations", 0)),
-                "residual": float(getattr(system, "residual_norm",
-                                          float("nan"))),
+                # strict JSON: a non-finite residual is stored as null
+                "residual": res if np.isfinite(res) else None,
                 "lattice": {
                     "gradients": int(getattr(lat, "gradients", 1)),
                     "geometry": str(getattr(lat, "geometry", "")),
@@ -200,28 +241,75 @@ class Writer:
                 members.append((pre + nm + ".npy", _npy_bytes(ax)))
             members.append((pre + "pro.npy", _npy_bytes(values)))
         if self._holder[0] is None:
+            t = time.monotonic()
             self._holder[0] = zipfile.ZipFile(self.path, "a", self.compress)
+            self._reopen_cost = time.monotonic() - t
         z = self._holder[0]
         z.writestr(pre + "step.json", json.dumps(meta))
         for name, data in members:
             z.writestr(name, data)
-        if time.monotonic() - self._synced > SYNC_SECONDS:
+        # Sync when the last sync is more than SYNC_SECONDS old, and after
+        # every calculation that was slow compared with a sync (more than
+        # SYNC_COST_FACTOR x its cost since the previous add): the next
+        # one is probably slow too, and nothing runs during its solve to
+        # write the directory. The first calculation counts as slow (the
+        # writer is created after it was solved). Syncing after EVERY add
+        # costs O(members) each, quadratic over a fast scan.
+        now = time.monotonic()
+        cost = self._sync_cost + self._reopen_cost
+        slow = (self._last_add is None
+                or now - self._last_add > SYNC_COST_FACTOR * cost)
+        self._last_add = now
+        if slow or now - self._synced > SYNC_SECONDS:
             self.sync()
 
 
-def _recover(path):
-    """Members of an archive whose directory is missing (the writing
-    process was killed between two syncs: zip appends new members over
-    the old directory). Every member starts with a local header carrying
-    its name and sizes, so the complete ones are read back in file order;
-    returns {name: bytes}, stopping at the first incomplete member."""
-    out = {}
+def _complete(name, raw):
+    """A recovered member's content is what its name says: a .npy array
+    header, a JSON document."""
+    if name.endswith(".npy"):
+        return raw[:6] == b"\x93NUMPY"
+    if name.endswith(".json"):
+        try:
+            json.loads(raw)
+        except ValueError:
+            return False
+    return True
+
+
+def _recover_members(path):
+    """[(name, bytes, method)] of an archive whose directory is missing
+    (the writing process was killed between two syncs: zip appends new
+    members over the old directory). Every member starts with a local
+    header carrying its name, sizes and CRC, so the complete ones are
+    read back in file order, stopping at the first incomplete member. A
+    member counts as complete only when its data has the uncompressed
+    size its header announces, the CRC matches and the content parses:
+    zipfile writes a PROVISIONAL header (CRC 0, compressed size 0) before
+    the data and rewrites it after, so a kill in between leaves a header
+    that would otherwise read as a complete empty member."""
+    out = []
     with open(path, "rb") as fp:
         blob = fp.read()
     pos = 0
     while blob[pos:pos + 4] == b"PK\x03\x04" and pos + 30 <= len(blob):
-        (_, flags, method, _, _, crc, csize, _, nlen,
+        (_, flags, method, _, _, crc, csize, usize, nlen,
          xlen) = struct.unpack("<HHHHHIIIHH", blob[pos + 4:pos + 30])
+        name = blob[pos + 30:pos + 30 + nlen].decode()
+        extra = blob[pos + 30 + nlen:pos + 30 + nlen + xlen]
+        if 0xFFFFFFFF in (csize, usize):        # zip64: sizes in the extra
+            k = 0
+            while k + 4 <= len(extra):
+                hid, hlen = struct.unpack("<HH", extra[k:k + 4])
+                if hid == 0x0001:
+                    vals = list(struct.unpack(
+                        "<" + "Q" * (hlen // 8), extra[k + 4:k + 4 + hlen]))
+                    if usize == 0xFFFFFFFF and vals:
+                        usize = vals.pop(0)
+                    if csize == 0xFFFFFFFF and vals:
+                        csize = vals.pop(0)
+                    break
+                k += 4 + hlen
         start = pos + 30 + nlen + xlen
         data = blob[start:start + csize]
         if flags & 0x08 or len(data) < csize:
@@ -230,38 +318,64 @@ def _recover(path):
             raw = zlib.decompress(data, -15) if method == 8 else data
         except zlib.error:
             break
-        if zlib.crc32(raw) != crc:
-            break
-        out[blob[pos + 30:pos + 30 + nlen].decode()] = raw
+        if (len(raw) != usize or zlib.crc32(raw) != crc
+                or not _complete(name, raw)):
+            break                         # provisional header / garbage
+        out.append((name, raw, method))
         pos = start + csize
     return out
+
+
+def _recover(path):
+    """{name: bytes} of the complete members of a directory-less file
+    (see _recover_members)."""
+    return {n: raw for n, raw, _ in _recover_members(path)}
+
+
+def _complete_steps(members):
+    """The step prefixes ('1/3/') whose step.json and every array it
+    announces were recovered, in file order, up to the first incomplete
+    step."""
+    steps = []
+    for n in members:
+        if n.endswith("/step.json"):
+            pre = n[:-len("step.json")]
+            want = _step_members(json.loads(members[n]))
+            if not all(pre + w in members for w in want):
+                break
+            steps.append(pre)
+    return steps
 
 
 def repair(path):
     """Rewrite a killed run's container with a proper directory (so
     `numpy.load` and zip tools read it again). Returns the number of
-    calculations kept; a healthy file is left alone."""
+    calculations kept; a healthy file is left alone. Each member keeps
+    its stored / deflated mode."""
     try:
         with zipfile.ZipFile(path):
             return None
     except zipfile.BadZipFile:
         pass
-    members = _recover(path)
+    found = _recover_members(path)
+    members = {n: raw for n, raw, _ in found}
+    method = {n: m for n, _, m in found}
     if "header.json" not in members:
         raise ValueError(f"{path}: nothing recoverable")
-    steps = [n[:-len("step.json")] for n in members
-             if n.endswith("/step.json")]
+    steps = _complete_steps(members)
+
+    def put(z, name):
+        z.writestr(name, members[name],
+                   compress_type=(zipfile.ZIP_DEFLATED if method[name] == 8
+                                  else zipfile.ZIP_STORED))
+
     tmp = path + ".repair"
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("header.json", members["header.json"])
+    with zipfile.ZipFile(tmp, "w") as z:
+        put(z, "header.json")
         for pre in steps:
-            want = _step_members(json.loads(members[pre + "step.json"]))
-            if all(pre + w in members for w in want):
-                for w in ["step.json"] + want:
-                    z.writestr(pre + w, members[pre + w])
-            else:
-                steps = steps[:steps.index(pre)]
-                break
+            for w in ["step.json"] + _step_members(
+                    json.loads(members[pre + "step.json"])):
+                put(z, pre + w)
     os.replace(tmp, path)
     return len(steps)
 
@@ -371,14 +485,19 @@ class Reader:
             raise ValueError(
                 f"{path}: container version {self.header['version']} is "
                 f"newer than this PySFBox reads ({VERSION})")
-        names = [n for n in self._names if n.endswith("/step.json")]
-        self.steps = [json.loads(self._read(n)) for n in names]
         if self.recovered:
             # a step whose arrays did not all reach the disk is dropped
-            have = set(self._names)
-            self.steps = [s for s in self.steps if all(
-                f"{s['start']}/{s['step']}/{w}" in have
-                for w in _step_members(s))]
+            names = [p + "step.json" for p in _complete_steps(members)]
+        else:
+            names = [n for n in self._names if n.endswith("/step.json")]
+        self.steps = [json.loads(self._read(n)) for n in names]
+        for s in self.steps:
+            if s.get("residual") is None:       # stored as null
+                s["residual"] = float("nan")
+        self._by_step = {}
+        for s in self.steps:
+            self._by_step.setdefault((s["start"], s["step"]), s)
+        if self.recovered:
             print(f"  note: {path} has no archive directory (the run was "
                   f"killed); {len(self.steps)} complete calculation(s) "
                   "recovered -- `python -m pysfbox.sfbz FILE --repair` "
@@ -428,21 +547,21 @@ class Reader:
     def kal_cell(self, i, label):
         return self.kal_row(i)[self.kal_labels.index(label)][1]
 
+    def _profile_of(self, s):
+        axes = [self._array(s, nm) for nm in s["axes"]]
+        return Profile(s["pro_labels"], axes, self._array(s, "pro"), s)
+
     def profile(self, start=1, step=0):
-        for s in self.steps:
-            if s["start"] == start and s["step"] == step:
-                if "pro_labels" not in s:
-                    break
-                axes = [self._array(s, nm) for nm in s["axes"]]
-                return Profile(s["pro_labels"], axes,
-                               self._array(s, "pro"), s)
-        raise KeyError(f"{self.path}: no profile for start {start}, "
-                       f"step {step}")
+        s = self._by_step.get((start, step))
+        if s is None or "pro_labels" not in s:
+            raise KeyError(f"{self.path}: no profile for start {start}, "
+                           f"step {step}")
+        return self._profile_of(s)
 
     def profiles(self, start=None):
         """Every stored profile dump, in file order (of one start block
         when `start` is given)."""
-        return [self.profile(s["start"], s["step"]) for s in self.steps
+        return [self._profile_of(s) for s in self.steps
                 if "pro_labels" in s and start in (None, s["start"])]
 
     def stack(self, label, start=None):
@@ -474,14 +593,29 @@ class Reader:
 
     def columns(self):
         """The kal table as {name: column}: start, step, scan, then the
-        kal labels; a column holding strings or ints keeps them (object /
-        int), every other one is float64 with NaN for NiN."""
+        kal labels. A column of strings is object (None for NiN); a column
+        of ints is int64, or float64 with NaN when some row is NiN, or
+        object (None for NiN) when a value does not fit exactly; every
+        other column is float64 with NaN for NiN."""
         cols = {"start": self.start, "step": self.step, "scan": self.scan}
         rows = [self.kal_row(i) for i in range(len(self._kal_steps))]
         for j, lab in enumerate(self.kal_labels):
-            kinds = {r[j][0] for r in rows} - {"nin"}
+            all_kinds = {r[j][0] for r in rows}
+            kinds = all_kinds - {"nin"}
             if kinds == {"int"}:
-                cols[lab] = np.array([r[j][1] for r in rows], dtype=int)
+                ints = [r[j][1] for r in rows if r[j][0] == "int"]
+                if "nin" not in all_kinds and all(
+                        -2**63 <= v < 2**63 for v in ints):
+                    cols[lab] = np.array([r[j][1] for r in rows],
+                                         dtype=np.int64)
+                elif "nin" in all_kinds and all(
+                        abs(v) <= 2**53 for v in ints):
+                    cols[lab] = np.array([np.nan if r[j][0] == "nin"
+                                          else float(r[j][1])
+                                          for r in rows])
+                else:
+                    cols[lab] = np.array([r[j][1] for r in rows],
+                                         dtype=object)
             elif "string" in kinds:
                 cols[lab] = np.array([r[j][1] for r in rows], dtype=object)
             else:
@@ -492,27 +626,77 @@ class Reader:
         """The kal table as a pandas DataFrame (needs pandas)."""
         return _frame(self.columns())
 
-    def export_text(self, directory=None):
+    def _run_stem(self):
+        """The stem the run named its text files after: stored since the
+        header carries `base`, else the input file's stem."""
+        b = self.header.get("base")
+        if b is None and self.header.get("input_file"):
+            b = os.path.splitext(self.header["input_file"])[0]
+        return b
+
+    def text_names(self):
+        """[(file name, kind, payload)] of the text files export_text
+        writes. All are named after the CONTAINER: `stem.kal` and the
+        run's .pro names with the run's stem replaced by the container's
+        (identical to the run's names unless the file was renamed)."""
+        stem = os.path.splitext(os.path.basename(self.path))[0]
+        run = self._run_stem()
+        out = []
+        if self._kal_steps:
+            out.append((stem + ".kal", "kal", None))
+        for s in self.steps:
+            if "pro_labels" not in s:
+                continue
+            name = s["pro_name"]
+            if run and name.startswith(run) and run != stem:
+                name = stem + name[len(run):]
+            out.append((name, "pro", s))
+        return out
+
+    def export_text(self, directory=None, overwrite=False):
         """Regenerate the Namics text files (byte-identical to what the
-        run writes without the container). Returns the paths written."""
+        run writes without the container). Returns the paths written.
+
+        Without `directory` the files go next to the container, and an
+        existing text file there whose content differs is NOT replaced
+        (FileExistsError, nothing written): the container may hold only
+        part of the run (declared in a later start), and the run's own
+        complete `.kal` sits there. Pass a directory, or overwrite=True."""
         from .output import format_kal_row, write_pro_text
+        explicit = directory is not None
         if directory is None:
             directory = os.path.dirname(os.path.abspath(self.path))
-        stem = os.path.splitext(os.path.basename(self.path))[0]
-        written = []
-        if self._kal_steps:
-            p = os.path.join(directory, stem + ".kal")
-            with open(p, "w") as fp:
-                fp.write("\t".join(self.kal_labels) + "\n")
+        texts = []
+        for name, kind, s in self.text_names():
+            buf = io.StringIO()
+            if kind == "kal":
+                buf.write("\t".join(self.kal_labels) + "\n")
                 for i in range(len(self._kal_steps)):
-                    fp.write(format_kal_row(self.kal_row(i)))
-            written.append(p)
-        for prof in self.profiles():
-            p = os.path.join(directory, prof.meta["pro_name"])
+                    buf.write(format_kal_row(self.kal_row(i)))
+            else:
+                prof = self._profile_of(s)
+                write_pro_text(buf, prof.labels, prof.axes, prof.values)
+            texts.append((os.path.join(directory, name), buf.getvalue()))
+        if not (explicit or overwrite):
+            differ = []
+            for p, text in texts:
+                if os.path.exists(p):
+                    with open(p) as fp:
+                        if fp.read() != text:
+                            differ.append(os.path.basename(p))
+            if differ:
+                raise FileExistsError(
+                    f"{self.path}: export_text would replace "
+                    f"{len(differ)} existing text file(s) with different "
+                    f"content ({', '.join(differ[:3])}"
+                    + (", ..." if len(differ) > 3 else "") + ") -- the "
+                    "container may hold only part of the run. Export into "
+                    "a directory (export_text(DIR), `--export DIR`) or "
+                    "pass overwrite=True (`--overwrite`)")
+        for p, text in texts:
             with open(p, "w") as fp:
-                write_pro_text(fp, prof.labels, prof.axes, prof.values)
-            written.append(p)
-        return written
+                fp.write(text)
+        return [p for p, _ in texts]
 
     def summary(self):
         h = self.header
@@ -548,6 +732,8 @@ class Collection:
     Reader. Indexing gives the Reader: c[0], c["ladder_3.sfbz"]."""
 
     def __init__(self, paths):
+        if not paths:
+            raise ValueError("load_many: no files given")
         self.readers = [Reader(p) for p in paths]
         self.files = [os.path.basename(p) for p in paths]
         per = [r.columns() for r in self.readers]
@@ -632,27 +818,40 @@ def load_many(paths):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help"):
-        print("usage: python -m pysfbox.sfbz FILE.sfbz [--export [DIR] | "
-              "--repair]\n"
+        print("usage: python -m pysfbox.sfbz FILE.sfbz [--export [DIR] "
+              "[--overwrite] | --repair]\n"
               "  no option: one line per stored calculation\n"
               "  --export:  write the Namics .kal/.pro text files (next to "
-              "the container, or in DIR)\n"
+              "the container, or in DIR);\n"
+              "             next to the container an existing text file "
+              "with other content\n"
+              "             is kept unless --overwrite is given\n"
               "  --repair:  give a killed run's file its archive directory "
               "back")
         return 0
-    if "--repair" in argv[1:]:
-        n = repair(argv[0])
-        print(f"{argv[0]}: " + ("healthy, left alone" if n is None
-                                else f"repaired, {n} calculation(s)"))
-        return 0
-    with load(argv[0]) as r:
-        if "--export" in argv[1:]:
-            k = argv.index("--export")
-            d = argv[k + 1] if len(argv) > k + 1 else None
-            for p in r.export_text(d):
-                print(p)
-        else:
-            print(r.summary())
+    path = argv[0]
+    if not os.path.exists(path):
+        print(f"python -m pysfbox.sfbz: no such file: {path}",
+              file=sys.stderr)
+        return 2
+    try:
+        if "--repair" in argv[1:]:
+            n = repair(path)
+            print(f"{path}: " + ("healthy, left alone" if n is None
+                                 else f"repaired, {n} calculation(s)"))
+            return 0
+        with load(path) as r:
+            if "--export" in argv[1:]:
+                k = argv.index("--export")
+                d = (argv[k + 1] if len(argv) > k + 1
+                     and not argv[k + 1].startswith("--") else None)
+                for p in r.export_text(d, overwrite="--overwrite" in argv):
+                    print(p)
+            else:
+                print(r.summary())
+    except (ValueError, zipfile.BadZipFile, FileExistsError) as e:
+        print(f"python -m pysfbox.sfbz: {e}", file=sys.stderr)
+        return 2
     return 0
 
 

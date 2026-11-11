@@ -5,8 +5,8 @@
 // Before the fix the kal column read omega at the FROZEN first layer
 // (omega = 0 there), so it printed ~1e-16 for every cored droplet, and a
 // Laplace_pressure search accepted its first probe. Now a frozen end is
-// read at the bulk plateau past it (System._laplace_sites; a one-time note
-// names the site).
+// read at the bulk plateau past it (System._laplace_sites; a note once
+// per start names the site).
 // Checked at creation (28 Oct 2026): row 2 = 1.16996e-2 = -omega at the
 // plateau site x = 11.5, equal to the Flory-Huggins pressure difference
 // Pi(phi_in) - Pi(phi_out) of the plateau and far-field compositions

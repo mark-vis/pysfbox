@@ -26,7 +26,8 @@ snap, [F44] alphabulk anchors, [F25] the range keyword follows the freedom,
 [F56] missing n_layers/composition, [F57] numbers and alias scope
 (newton/sys substitution, the unparseable-newton-value warning); [E] a
 fixed-potential electrode on a refined lattice is refused at build, not
-as an 'interior electrode' at the first residual (28 Oct 2026).
+as an 'interior electrode' at the first residual (28 Oct 2026); [O] two
+frozen segments whose interior frozen_range values overlap (11 Nov 2026).
 """
 import contextlib
 import io
@@ -181,6 +182,25 @@ raises("lowerbound wall with the default mirror bound",
 raises("two walls in the same ghost layer",
        WALL + "mon : T : freedom : frozen\nmon : T : frozen_range : "
        "lowerbound\n", ValueError, ["Overpopulated"])
+
+print("[O] overlapping interior frozen ranges")
+INNER = sub(WALL, "lat : flat : lowerbound : surface\n", "").replace(
+    "frozen_range : lowerbound", "frozen_range : 1;2")
+raises("S on 1;2 and T on 2;2 share layer 2",
+       INNER + "mon : T : freedom : frozen\nmon : T : frozen_range : 2;2\n",
+       ValueError, ["overlap", "'S'", "'T'", "layer 2"])
+builds("S on 1;2 and T on 3;3 (adjacent, no overlap)",
+       INNER + "mon : T : freedom : frozen\nmon : T : frozen_range : 3;3\n")
+raises("2-D: two frozen boxes sharing a cell",
+       """
+lat : flat : gradients : 2
+lat : flat : n_layers_x : 10
+lat : flat : n_layers_y : 3
+lat : flat : geometry : flat
+""" + WALL.split("lat : flat : lowerbound : surface\n")[1].replace(
+           "frozen_range : lowerbound", "frozen_range : 1,1;2,3")
+       + "mon : T : freedom : frozen\nmon : T : frozen_range : 2,2;2,2\n",
+       ValueError, ["overlap", "cell (2, 2)"])
 ND = """
 lat : flat : gradients : 2
 lat : flat : n_layers_x : 10
@@ -479,6 +499,169 @@ for label, last in (("thin-shell kal Laplace_pressure is NiN", ""),
     else:
         check(label, err is None and len(rows) == 2
               and rows[1][1] == "NiN", f"{err!r} {rows}")
+# THE PLATEAU CRITERION (System._core_plateau_probe, 11 Nov 2026): the
+# candidate site is a bulk plateau when omega is flat over 2 layers on
+# either side of it to PLATEAU_FLAT = 5e-3 of the interfacial omega
+# excess. Every state below is checked with its MARGIN (ratio = measured
+# spread / threshold; a factor 3 or more on either side, so that no
+# outcome can flip with platform rounding), and the real states are
+# NUCLEATED (pinned start, then released): a cold solve of a
+# supersaturated box can land on either arrangement of the phases.
+import numpy as _np  # noqa: E402
+from pysfbox.system import PLATEAU_FLAT  # noqa: E402
+
+# (a) synthetic two-phase state on the box above: a step in omega of
+# height 0.05 (the interfacial excess), the candidate at layer 9
+_s = build(THIN.format(last=""))
+_k = _np.arange(_s.lat.M)
+_sites = _k[5:30]                       # free sites past the 1;4 core
+_oil = _np.where(_k < 20, 0.9, 0.05)
+_s.molecules["oil"].phi = _oil
+_s.molecules["W"].phi = 1.0 - _oil
+for _level in (-0.05, 0.0):             # the inner phase's omega level
+    for _amp, _want in ((PLATEAU_FLAT * 0.05 / 3, True),
+                        (PLATEAU_FLAT * 0.05 * 3, False)):
+        _gpd = _np.where(_k < 20, _level, _level + 0.05)
+        _gpd[8] -= 1e-9                 # the candidate: site 8, layer 9
+        _gpd[10] += _amp                # a ripple two sites from it
+        _i, _r = _s._core_plateau_probe(_gpd, _sites)
+        check(f"omega level {_level:g}, ripple {'1/3' if _want else '3'} x "
+              f"the threshold: {'plateau' if _want else 'no plateau'}",
+              (_i is not None) == _want and abs(_r / (1 / 3 if _want else 3)
+                                                - 1) < 1e-3, f"{_i} {_r:.4f}")
+# a density ripple alone (omega flat) does not refuse the site
+_rip = _np.where(_k < 20, 0.9 + 7e-3 * (-1.0) ** _k, 0.05)
+_s.molecules["oil"].phi = _rip
+_s.molecules["W"].phi = 1.0 - _rip
+_gpd = _np.where(_k < 20, -0.05, 0.0)
+_gpd[8] -= 1e-9
+_i, _r = _s._core_plateau_probe(_gpd, _sites)
+check("flat omega with a 7e-3 density ripple: plateau", _i == 8, f"{_i}")
+
+
+# (b) real states, with the ratio of every plateau probe
+def run_probed(text, name):
+    """run_file on `text`; returns (kal rows as strings, error, calls)
+    with calls = [(System, omega, sites, site, ratio)] per probe."""
+    calls = []
+    orig = System._core_plateau_probe
+
+    def spy(self, gpd, sites):
+        site, ratio = orig(self, gpd, sites)
+        calls.append((self, _np.array(gpd), _np.array(sites), site, ratio))
+        return site, ratio
+    System._core_plateau_probe = spy
+    p = write(text, name)
+    err = None
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            runner.run_file(p, verbose=False)
+    except Exception as e:                          # noqa: BLE001
+        err = e
+    finally:
+        System._core_plateau_probe = orig
+    rows = [ln.split("\t") for ln in
+            open(p[:-3] + ".kal").read().split("\n")[1:] if ln]
+    return rows, err, calls
+
+
+def replaced_rule(s, gpd, sites, density):
+    """The acceptance tests the present criterion replaced, on the same
+    candidate site: the 28 Oct 2026 one (omega variation over the two
+    neighbours <= 10 % of |omega(i)| + 1e-6 of the largest |omega|) and,
+    with density=True, the 11 Nov one on top of it (every density flat
+    to 1e-3 within 2 layers, counted in `sites`)."""
+    skip = s.lat.fjc + 1
+    win = sites[skip:]
+    best = max(s.molecules.values(), key=lambda m: float(
+        _np.abs(m.phi[win] - m.phi[win[-1]]).max()))
+    k = s._half_height_crossing(best.phi, win)
+    cand = win[:-1] if k is None else win[:-1][:k]
+    var = _np.abs(gpd[cand + 1] - gpd[cand - 1])
+    j = int(_np.argmin(var))
+    i = int(cand[j])
+    ok = bool(var[j] <= 0.1 * abs(gpd[i])
+              + 1e-6 * float(_np.abs(gpd[sites]).max()))
+    if density:
+        h = 2 * s.lat.fjc
+        near = sites[max(0, skip + j - h):skip + j + h + 1]
+        ok = ok and all(float(_np.abs(m.phi[near] - m.phi[i]).max()) <= 1e-3
+                        for m in s.molecules.values())
+    return ok, i
+
+
+def fh_coexistence_dp(phib, N=20, chi=1.2):
+    """Pressure difference of the two homogeneous Flory-Huggins phases
+    at the exchange chemical potential of the composition phib."""
+    mu = lambda f: (_np.log(f) / N + 1 / N - _np.log(1 - f) - 1  # noqa
+                    + chi * (1 - 2 * f))
+    P = lambda f: -_np.log(1 - f) - (1 - 1 / N) * f - chi * f * f  # noqa
+    roots = []
+    for lo, hi in ((1e-12, 0.05), (0.7, 1 - 1e-12)):  # outside the spinodal
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if mu(mid) < mu(phib) else (lo, mid)
+        roots.append(0.5 * (lo + hi))
+    return P(roots[1]) - P(roots[0])
+
+
+CORED = """
+lat : NN : geometry : spherical
+lat : NN : n_layers : {nl}
+lat : NN : lowerbound : mirror
+lat : NN : upperbound : mirror
+mon : C : freedom : frozen
+mon : C : frozen_range : 1;2
+mon : A : freedom : pinned
+mon : A : pinned_range : {pin}
+mon : W : freedom : free
+mon : A : chi_C : -3
+mon : A : chi_W : 1.2
+mol : A : composition : (A)20
+mol : A : freedom : restricted
+mol : A : theta : {theta}
+mol : W : composition : (W)1
+mol : W : freedom : solvent
+newton : n : tolerance : 1e-9
+output : kal : append : false
+kal : sys : NN : Laplace_pressure
+start
+mon : A : freedom : free
+start
+"""
+# a droplet on the core of an 18-layer sphere: a 6-layer plateau
+_rows, _err, _calls = run_probed(CORED.format(nl=18, pin="3;11", theta=5000),
+                                 "droplet18.in")
+_sd, _gd, _sitesd, _id, _rd = _calls[-1]
+_dp = float(_rows[1][0]) if _rows[1][0] != "NiN" else float("nan")
+check("droplet on a core, 18 layers: served with ratio < 1/3",
+      _err is None and _id is not None and _rd < 1 / 3,
+      f"ratio {_rd:.3f}, dp {_dp:.6e}")
+_ref = fh_coexistence_dp(_sd.molecules["A"].phibulk)
+check("... dp within 1.5 % of the Flory-Huggins coexistence pressure",
+      abs(_dp / _ref - 1) < 1.5e-2, f"{_dp / _ref - 1:+.2e}")
+check("... which the 11 Nov density test refused",
+      not replaced_rule(_sd, _gd, _sitesd, density=True)[0])
+_shift = _gd - _gd[_id]
+_is, _rs = _sd._core_plateau_probe(_shift, _sitesd)
+check("the verdict is independent of the level of omega (omega(i) = 0)",
+      _is == _id and abs(_rs / _rd - 1) < 1e-9, f"site {_is}, {_rs:.3f}")
+check("... where the 28 Oct relative test refused the same profile",
+      not replaced_rule(_sd, _shift, _sitesd, density=False)[0])
+# the 14-layer box with theta 1500: a 4-layer shell on the core
+_rows, _err, _calls = run_probed(CORED.format(nl=14, pin="3;8", theta=1500),
+                                 "shell14.in")
+check("shell on a core, 14 layers: NiN with ratio > 3",
+      _err is None and _rows[1][0] == "NiN" and _calls[-1][3] is None
+      and _calls[-1][4] > 3, f"{_rows[1]} ratio {_calls[-1][4]}")
+# the regression tests/laplace_core.in: every search probe
+with open(os.path.join(HERE, "laplace_core.in")) as _fp:
+    _rows, _err, _calls = run_probed(_fp.read(), "laplace_core.in")
+_ratios = [c[4] for c in _calls]
+check("laplace_core.in: every probe accepted with ratio < 1/3",
+      _err is None and len(_ratios) >= 13
+      and all(r is not None and r < 1 / 3 for r in _ratios),
+      f"{len(_ratios)} probes, max {max(_ratios):.3f}")
 
 print("[R27] review 27 Oct 2026: N-D guards and grammar")
 import numpy as np  # noqa: E402
