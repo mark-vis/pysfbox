@@ -26,6 +26,10 @@ from .sfnewton import SFNewton
 # the last cascade stage (System._newton_polish) only starts from a stall
 # this close to a solution: a root finder started there stays on its branch
 POLISH_MAX_ERR = 1e-3
+# A site next to a frozen block is a bulk plateau when omega varies over the
+# 2 layers on either side of it by at most this fraction of the interfacial
+# omega excess (System._core_plateau_probe)
+PLATEAU_FLAT = 5e-3
 
 # System._audit_solution (the post-solve input audit): a restricted
 # molecule's converged profile must integrate to its theta -- and each of its
@@ -1606,10 +1610,17 @@ class System:
 
     def _core_plateau_site(self, gpd, sites):
         """Bulk-plateau site next to a frozen block, for the Laplace
-        pressure. `sites` are the free sites ordered from the frozen
-        block outward. The first fjc + 1 of them carry the contact chi
-        term (the site average reaches fjc sites, plus one for margin)
-        and are skipped. Then:
+        pressure; None when there is no
+        plateau (`_core_plateau_probe`, which also returns the margin)."""
+        return self._core_plateau_probe(gpd, sites)[0]
+
+    def _core_plateau_probe(self, gpd, sites):
+        """(site, ratio): the bulk-plateau site next to a frozen block and
+        its flatness measure over the acceptance threshold (ratio <= 1:
+        accepted; None where no test applies). `sites` are the free sites
+        ordered from the frozen block outward. The first fjc + 1 of them
+        carry the contact chi term (the site average reaches fjc sites,
+        plus one for margin) and are skipped. Then:
         - every density within 1e-2 of its far-end value past them: ONE
           phase from the core to the far end (a contact tail at most, no
           droplet): the most stationary omega site of the whole window,
@@ -1619,16 +1630,33 @@ class System:
         - else the window ends at the first interface, the half-height
           crossing of the molecule whose density changes most between
           the window start and the far end, and the site with the most
-          stationary omega, min |omega(i+1) - omega(i-1)|, is accepted
-          when that variation is at most 10 % of |omega(i)| plus 1e-6 of
-          the largest |omega| on the free sites -- an outer bulk sits at
-          omega ~ 0, where the relative test alone would reject solver
-          noise -- and every density is flat to 1e-3 within 2 layers of
-          it (an oscillating omega tail has stationary points too).
+          stationary omega, min |omega(i+1) - omega(i-1)|, is the
+          candidate. It is a plateau when omega is FLAT around it on the
+          pressure scale of the interface itself: the largest
+          |omega(k) - omega(i)| over the window sites k within 2 layers
+          (2 fjc sites) of i is at most PLATEAU_FLAT = 5e-3 of the
+          interfacial omega excess, the largest |omega(k) - omega(i)|
+          over the window (without its last fjc + 1 sites, the contact
+          sites of a frozen far end).
+        WHY this measure (11 Nov 2026, 50 states against the homogeneous
+        Flory-Huggins pressure of the plateau phase): the spread of omega
+        over the neighbouring plateau sites is the uncertainty of the
+        reading, and the interfacial excess (~ gamma / width) is the one
+        pressure scale the state defines whether dp is finite or zero.
+        Every state it serves reads its plateau pressure within 0.7 % of
+        the Laplace pressure (droplets) or 0.4 % of the interfacial
+        excess (flat films, true dp = 0), and the spread never
+        underestimated the error by more than a factor 2. Two earlier
+        tests are gone: the variation relative to |omega(i)| itself
+        (omega(i) is ~0 wherever the implied bulk lands on the plateau
+        phase, so a clean cored droplet was refused, while a stationary
+        point of an oscillating tail passed), and an absolute 1e-3
+        density flatness over the same sites (it reached into the contact
+        sites and refused droplets read to 0.5 %).
         None: no plateau (a thin shell or film around the core)."""
         skip = self.lat.fjc + 1
         if len(sites) < skip + 3:
-            return None
+            return None, None
         win = sites[skip:]
         dev, best = 0.0, None
         for m in self.molecules.values():
@@ -1642,24 +1670,23 @@ class System:
             if k is not None:
                 cand = cand[:k]
         if len(cand) == 0:
-            return None
+            return None, None
         var = np.abs(gpd[cand + 1] - gpd[cand - 1])
         j = int(np.argmin(var))
         i = int(cand[j])
-        scale = float(np.abs(gpd[sites]).max())
-        if not one_phase and var[j] > 0.1 * abs(gpd[i]) + 1e-6 * scale:
-            return None                   # layered, not a bulk plateau
-        if not one_phase:
-            # a stationary point of an oscillating omega tail is no
-            # plateau: every density must also be flat (to 1e-3) over
-            # 2 layers (2 fjc sites) on each side of the candidate
-            h = 2 * self.lat.fjc
-            pos = skip + j                # cand[j] == sites[skip + j]
-            near = sites[max(0, pos - h):pos + h + 1]
-            for m in self.molecules.values():
-                if float(np.abs(m.phi[near] - m.phi[i]).max()) > 1e-3:
-                    return None
-        return i
+        if one_phase:
+            return i, None
+        body = win[:-skip]            # cand[j] == win[j]
+        if len(body) == 0:
+            return None, None
+        h = 2 * self.lat.fjc
+        spread = float(np.abs(gpd[win[max(0, j - h):j + h + 1]]
+                              - gpd[i]).max())
+        excess = float(np.abs(gpd[body] - gpd[i]).max())
+        ratio = (spread / (PLATEAU_FLAT * excess) if excess > 0
+                 else (0.0 if spread == 0 else float("inf")))
+        # ratio > 1: layered, a tail, or a shell -- not a bulk plateau
+        return (i if ratio <= 1 else None), ratio
 
     @staticmethod
     def _half_height_crossing(phi, sites):
