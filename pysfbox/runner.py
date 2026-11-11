@@ -1133,9 +1133,24 @@ def _warm_seed(x_prev, sys_old, sys_new, x_before=None):
 def run_file(path, verbose=True):
     """Run all calculations in a Namics input file; writes .kal/.pro next
     to the input file. Returns the last System (for interactive use)."""
+    opened = []
+    try:
+        return _run_file(path, verbose, opened)
+    finally:
+        # also when the run ends in an exception: a caller that keeps the
+        # traceback alive (notebook, harness) must not hold a .sfbz
+        # container without its archive directory
+        for outputs in opened:
+            outputs.close()
+
+
+def _run_file(path, verbose, opened):
     _reset_file_notes()
     calculations = read_input(path)
     _check_first_start(calculations[0])
+    from . import sfbz          # lazy: `python -m pysfbox.sfbz`
+    for settings in calculations:
+        sfbz.options(settings)  # a bad output : sfbz flag raises upfront
     base = os.path.splitext(path)[0]
     system = None
     n_starts = len(calculations)
@@ -1169,6 +1184,7 @@ def run_file(path, verbose=True):
     kal_columns = _output_specs(calculations[-1], "kal")
     outputs = _Outputs(base, path,
                        [f"{k}:{n}:{p}" for k, n, p in kal_columns])
+    opened.append(outputs)
     for start_i, settings in enumerate(calculations, 1):
         _reset_start_notes()
         kal_specs = kal_columns if _output_specs(settings, "kal") else []

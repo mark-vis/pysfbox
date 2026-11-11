@@ -1262,6 +1262,10 @@ and `.sk` stay text.
 | `text` | true / false | true | false = skip the `.kal` / `.pro` text files (the container can regenerate them, see below). |
 | `compress` | true / false | true | false = store the arrays uncompressed (larger, faster). |
 
+The three flags take `true` / `false` (also `1` / `0`, `yes` / `no`, any
+case); any other value stops the run before the first solve with a
+message naming the line.
+
 The file is a zip archive of NumPy `.npy` arrays and JSON, so it needs
 nothing beyond NumPy and is also readable without PySFBox:
 `numpy.load("base.sfbz")["1/0/pro"]` (members `<start>/<step>/kal`,
@@ -1292,10 +1296,21 @@ python -m pysfbox.sfbz base.sfbz --export [DIR]  write the .kal/.pro text
 python -m pysfbox.sfbz base.sfbz --repair        after a killed run
 ```
 
-`--export` reproduces the text files byte for byte. A run that is KILLED
-(not one that stops on an error) can leave a file that zip tools and
-`numpy.load` refuse; `sfbz.load` still reads every complete calculation
-from it and `--repair` rewrites it as a proper archive.
+`--export` reproduces the text files byte for byte, named after the
+container (`base.kal`, `base_*.pro`; a renamed container renames both).
+Without DIR they go next to the container, and an existing text file
+there with different content is kept and the export refused (the
+container may hold only part of the run, if it was declared in a later
+start); give a DIR or `--overwrite` (`export_text(overwrite=True)`).
+
+The archive directory is written after the first calculation, whenever
+the previous write is more than 2 s old, after every calculation that
+took longer than about 20 times the cost of writing it, and at the end
+of the run, also when the run stops on an error. A run that is KILLED
+can therefore leave a file that zip tools and `numpy.load` refuse when
+the kill falls in the solve that follows a fast calculation; `sfbz.load`
+still reads every complete calculation from it and `--repair` rewrites
+it as a proper archive (keeping each member stored or deflated).
 
 ### Spec-line details
 
