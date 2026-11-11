@@ -60,6 +60,26 @@ columns skip frozen interior sites) — each noted in the
 relevant section below. Inputs that Namics refuses, and a few it accepts but
 solves wrongly, raise with an explanation instead of running.
 
+## Binary output container (`.sfbz`)
+
+`output : sfbz : write : true` writes one binary file per input next to
+(or, with `text : false`, instead of) the `.kal`/`.pro` text files: a zip
+of NumPy arrays plus the input text and per-calculation metadata, 4-6x
+smaller and faster than the text, readable with plain `numpy.load`.
+
+```python
+from pysfbox import sfbz
+r = sfbz.load("scan.sfbz")
+s = r.stack("mol:pol:phi")              # (steps, sites)
+plt.plot(s.x, s.values.T)
+plt.plot(r.scan, r.kal["sys:NN:grand_potential"])
+sfbz.load_many("ladder_*.sfbz").frame() # several runs, one DataFrame
+```
+
+`python -m pysfbox.sfbz scan.sfbz --export` regenerates the text files
+byte for byte. Details: REFERENCE.md, "The `.sfbz` container"; module
+`pysfbox/sfbz.py`.
+
 ## What it supports (v1)
 
 - **Input**: the Namics `key : name : parameter : value` format, `//`
